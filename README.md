@@ -2,6 +2,10 @@
 
 **Bonds against official product recalls. Government data decides. Not the manufacturer.**
 
+- Live app: [https://recallvault-app.vercel.app](https://recallvault-app.vercel.app)
+- Also: [https://recall-vault-two.vercel.app](https://recall-vault-two.vercel.app)
+- Source: [github.com/LIBRAPHILIP/recall-vault](https://github.com/LIBRAPHILIP/recall-vault)
+
 RecallVault is a complete GenLayer application: a Python Intelligent Contract plus a wallet-connected frontend. GenLayer is not a sidecar. The contract fetches live FDA, NHTSA, and CPSC records, reaches consensus on whether a specific lot / serial / vehicle is in scope, and pays GEN from a posted bond.
 
 This is not “a better LLM response.” The LLM is only used to interpret official recall language. The outcome that moves money is an on-chain consensus decision.
