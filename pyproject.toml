@@ -1,0 +1,11 @@
+[project]
+name = "recall-vault"
+version = "1.0.0"
+description = "RecallVault — official-data product recall bonds on GenLayer"
+requires-python = ">=3.12"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/direct"]
+pythonpath = ["."]
+addopts = "-v"

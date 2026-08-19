@@ -1,0 +1,17 @@
+# GenLayer test runner config
+# https://docs.genlayer.com/api-references/genlayer-test
+
+default_network: localnet
+
+networks:
+  localnet:
+    url: http://localhost:4000/api
+    leader_only: true
+  studionet:
+    url: https://studio.genlayer.com/api
+    leader_only: true
+  testnet_bradbury:
+    url: https://rpc-bradbury.genlayer.com
+    accounts:
+      - "${ACCOUNT_PRIVATE_KEY_1}"
+      - "${ACCOUNT_PRIVATE_KEY_2}"
