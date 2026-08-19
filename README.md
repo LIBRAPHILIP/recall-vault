@@ -5,6 +5,8 @@
 - Live app: [https://recallvault-app.vercel.app](https://recallvault-app.vercel.app)
 - Also: [https://recall-vault-two.vercel.app](https://recall-vault-two.vercel.app)
 - Source: [github.com/LIBRAPHILIP/recall-vault](https://github.com/LIBRAPHILIP/recall-vault)
+- Live contract (Studionet): [`0x5372693bd427e52A0677c771D57aeCC027ef32b5`](https://explorer-studio.genlayer.com/address/0x5372693bd427e52A0677c771D57aeCC027ef32b5)
+- Deploy tx: [`0x5ef2155cb4506384e80db98143cd53f2299172afddf7d152e059b8e5ab8e0e14`](https://explorer-studio.genlayer.com/tx/0x5ef2155cb4506384e80db98143cd53f2299172afddf7d152e059b8e5ab8e0e14)
 
 RecallVault is a complete GenLayer application: a Python Intelligent Contract plus a wallet-connected frontend. GenLayer is not a sidecar. The contract fetches live FDA, NHTSA, and CPSC records, reaches consensus on whether a specific lot / serial / vehicle is in scope, and pays GEN from a posted bond.
 

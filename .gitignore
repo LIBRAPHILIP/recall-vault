@@ -13,3 +13,6 @@ frontend/tsconfig.tsbuildinfo
 .idea/
 .vscode/
 .vercel/
+deploy/keypair.json
+deploy/deployer.local.json
+deploy/*.local.json
