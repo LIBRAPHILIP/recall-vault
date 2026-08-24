@@ -1,5 +1,9 @@
 export const WEI = 10n ** 18n;
 
+/** Studio simulates GEN as whole units. Bradbury/Asimov use 18 decimals. */
+export const GEN_DECIMALS =
+  import.meta.env.VITE_NETWORK === "studionet" || import.meta.env.VITE_NETWORK === "localnet" ? 0 : 18;
+
 export function asStr(value: unknown): string {
   if (value == null) return "";
   if (typeof value === "string") return value;
@@ -23,8 +27,12 @@ export function parseWei(genAmount: string): bigint {
   if (!/^\d+$/.test(whole) || !/^\d*$/.test(fracRaw)) {
     throw new Error("Enter a valid GEN amount");
   }
-  const frac = (fracRaw + "000000000000000000").slice(0, 18);
-  return BigInt(whole) * WEI + BigInt(frac);
+  if (GEN_DECIMALS === 0) {
+    if (fracRaw.replace(/0+$/, "")) throw new Error("Studionet amounts are whole GEN");
+    return BigInt(whole);
+  }
+  const frac = (fracRaw + "0".repeat(GEN_DECIMALS)).slice(0, GEN_DECIMALS);
+  return BigInt(whole) * 10n ** BigInt(GEN_DECIMALS) + BigInt(frac || "0");
 }
 
 export function formatGen(wei: string | bigint | number, digits = 4): string {
@@ -36,8 +44,10 @@ export function formatGen(wei: string | bigint | number, digits = 4): string {
   }
   const neg = value < 0n;
   const abs = neg ? -value : value;
-  const whole = abs / WEI;
-  const frac = (abs % WEI).toString().padStart(18, "0").slice(0, digits);
+  if (GEN_DECIMALS === 0) return `${neg ? "-" : ""}${abs.toString()}`;
+  const base = 10n ** BigInt(GEN_DECIMALS);
+  const whole = abs / base;
+  const frac = (abs % base).toString().padStart(GEN_DECIMALS, "0").slice(0, digits);
   const trimmed = frac.replace(/0+$/, "");
   const body = trimmed ? `${whole.toString()}.${trimmed}` : whole.toString();
   return neg ? `-${body}` : body;
@@ -62,7 +72,9 @@ export function explorerAddr(addr: string, network: string): string {
   return `#${addr}`;
 }
 
-export function faucetUrl(): string {
+export function faucetUrl(network = import.meta.env.VITE_NETWORK): string {
+  if (network === "studionet") return "https://studio.genlayer.com";
+  if (network === "localnet") return "http://localhost:8080";
   return "https://testnet-faucet.genlayer.foundation";
 }
 

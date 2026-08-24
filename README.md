@@ -80,6 +80,8 @@ Categories: `food`, `drug`, `device`, `vehicle`, `consumer`.
 
 ## Quick start
 
+The public demo is already deployed. Skip to step 2 if you only want to run the UI against Studionet.
+
 ### 1. Deploy the Intelligent Contract
 
 **Option A — GenLayer Studio (fastest)**
@@ -112,12 +114,14 @@ copy .env.example .env     # Windows
 # cp .env.example .env     # macOS / Linux
 ```
 
-Set:
+`.env.example` already points at the live Studionet contract. To use your own deploy:
 
 ```
 VITE_CONTRACT_ADDRESS=0xYourDeployedAddress
-VITE_NETWORK=testnetBradbury
+VITE_NETWORK=studionet
 ```
+
+Studionet treats GEN as whole units. Bradbury uses 18 decimals — set `VITE_NETWORK=testnetBradbury` if you redeploy there.
 
 ```bash
 npm install
@@ -130,7 +134,7 @@ Open [http://localhost:3000](http://localhost:3000).
 
 The app discovers **MetaMask** and **OKX Wallet** through EIP-6963 (with `window.ethereum` / `window.okxwallet` fallbacks). Before every write it calls `client.connect("<network>")` so the wallet is switched to the GenLayer chain.
 
-Get test GEN from the [faucet](https://testnet-faucet.genlayer.foundation).
+Get test GEN from [GenLayer Studio](https://studio.genlayer.com) (Studionet 💧 faucet). For Bradbury use the [testnet faucet](https://testnet-faucet.genlayer.foundation).
 
 ### 4. Demo path
 

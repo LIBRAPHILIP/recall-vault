@@ -47,16 +47,17 @@ export function TxLifecycle({ snap }: { snap: ReceiptSnapshot | null }) {
       </div>
       {snap.execution ? <div className="small muted mt">Execution: {snap.execution}</div> : null}
       {snap.error ? <div className="notice error mt">{snap.error}</div> : null}
-      {current === "FINALIZED" && !snap.error ? (
+      {(current === "FINALIZED" || current === "ACCEPTED") && !snap.error ? (
         <div className="notice ok mt">
-          Consensus finalized. If this was a payout, GEN is released on finalization via the contract’s
-          transfer message.
+          {current === "FINALIZED"
+            ? "Consensus finalized. If this was a payout, GEN is released on finalization via the contract’s transfer message."
+            : "Consensus accepted this write. Contract state is readable. Finalization may follow."}
         </div>
       ) : null}
-      {current !== "FINALIZED" && !failed ? (
+      {current !== "FINALIZED" && current !== "ACCEPTED" && !failed ? (
         <p className="hint mt">
-          Intelligent Contract calls go through Optimistic Democracy: a leader proposes, validators
-          re-fetch official recall sources, then the result is accepted and finalized.
+          The wallet signs a GenLayer write. A leader proposes, validators re-fetch official recall
+          sources, then the result is accepted and finalized. This strip is the real receipt, not a spinner.
         </p>
       ) : null}
     </div>

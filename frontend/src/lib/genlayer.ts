@@ -1,11 +1,11 @@
 import { createClient } from "genlayer-js";
 import { localnet, studionet, testnetAsimov, testnetBradbury } from "genlayer-js/chains";
-import { ExecutionResult, TransactionStatus } from "genlayer-js/types";
+import { ExecutionResult, TransactionStatus, transactionsStatusNumberToName } from "genlayer-js/types";
 import { asBool, asStr } from "./format";
 
-export const NETWORK_NAME = (import.meta.env.VITE_NETWORK || "testnetBradbury") as NetworkName;
+export const NETWORK_NAME = (import.meta.env.VITE_NETWORK || "studionet") as NetworkName;
 export const CONTRACT_ADDRESS = (import.meta.env.VITE_CONTRACT_ADDRESS ||
-  "0x0000000000000000000000000000000000000000") as `0x${string}`;
+  "0x5372693bd427e52A0677c771D57aeCC027ef32b5") as `0x${string}`;
 
 export type NetworkName = "localnet" | "studionet" | "testnetAsimov" | "testnetBradbury";
 
@@ -279,7 +279,12 @@ function pickStatus(tx: Record<string, unknown>): string {
   for (const c of candidates) {
     if (c == null) continue;
     const text = String(c).trim();
-    if (!text || /^\d+$/.test(text)) continue;
+    if (!text) continue;
+    if (/^\d+$/.test(text)) {
+      const mapped = (transactionsStatusNumberToName as Record<string, string>)[text];
+      if (mapped) return mapped.toUpperCase();
+      continue;
+    }
     return text.toUpperCase();
   }
   return "";
@@ -321,30 +326,49 @@ export async function sendAndTrack(
   }, 2500);
 
   try {
-    const receipt = (await readClient.waitForTransactionReceipt({
+    const accepted = (await readClient.waitForTransactionReceipt({
       hash,
-      status: TransactionStatus.FINALIZED,
-      interval: 4000,
-      retries: 90,
+      status: TransactionStatus.ACCEPTED,
+      interval: 3000,
+      retries: 80,
     })) as Record<string, unknown>;
+    snap = {
+      ...snap,
+      status: pickStatus(accepted) || "ACCEPTED",
+      execution: asStr(accepted.txExecutionResultName || accepted.resultName),
+    };
+    onUpdate(snap);
 
-    const exec = asStr(receipt.txExecutionResultName || receipt.execution_result);
-    const statusName = pickStatus(receipt) || "FINALIZED";
+    try {
+      const receipt = (await readClient.waitForTransactionReceipt({
+        hash,
+        status: TransactionStatus.FINALIZED,
+        interval: 4000,
+        retries: 40,
+      })) as Record<string, unknown>;
+      Object.assign(accepted, receipt);
+    } catch {
+      /* Studionet often settles at ACCEPTED; keep going. */
+    }
+
+    const exec = asStr(accepted.txExecutionResultName || accepted.execution_result || accepted.resultName);
+    const statusName = pickStatus(accepted) || snap.status;
     const failed =
       exec === ExecutionResult.FINISHED_WITH_ERROR ||
+      exec === "FAILURE" ||
       statusName === "UNDETERMINED" ||
       statusName === "CANCELED" ||
       statusName === "VALIDATORS_TIMEOUT" ||
       statusName === "LEADER_TIMEOUT";
-    const leader = receipt.consensus_data as { leader_receipt?: Array<{ error?: string }> } | undefined;
+    const leader = accepted.consensus_data as { leader_receipt?: Array<{ error?: string }> } | undefined;
     const leaderError = leader?.leader_receipt?.[0]?.error || "";
 
     snap = {
       hash,
-      status: failed ? statusName || "FAILED" : "FINALIZED",
+      status: failed ? statusName || "FAILED" : statusName === "FINALIZED" ? "FINALIZED" : "ACCEPTED",
       execution: exec,
       error: failed
-        ? asStr(leaderError || receipt.txExecutionError || receipt.error || "Execution did not finish cleanly")
+        ? asStr(leaderError || accepted.txExecutionError || accepted.error || "Execution did not finish cleanly")
         : "",
     };
     onUpdate(snap);

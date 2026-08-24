@@ -274,9 +274,10 @@ export function App() {
             <p className="hint mt">
               Need test GEN?{" "}
               <a href={faucetUrl()} target="_blank" rel="noreferrer">
-                Open the GenLayer faucet
+                {NETWORK_NAME === "studionet" ? "Open GenLayer Studio and use the faucet" : "Open the GenLayer testnet faucet"}
               </a>
-              .
+              . Writes call <span className="mono">client.connect("{NETWORK_NAME}")</span> then{" "}
+              <span className="mono">writeContract</span>.
             </p>
             <button className="ghost mt" onClick={() => setPicker(false)}>
               Close
@@ -286,7 +287,11 @@ export function App() {
       ) : null}
 
       <footer className="mt muted small">
-        Contract {shortAddr(CONTRACT_ADDRESS)} · {net.rpc} · payouts settle on GenLayer, not on a backend LLM
+        Intelligent Contract{" "}
+        <a href={explorerAddr(CONTRACT_ADDRESS, NETWORK_NAME)} target="_blank" rel="noreferrer">
+          {shortAddr(CONTRACT_ADDRESS)}
+        </a>{" "}
+        · {net.label} · {net.rpc} · payouts settle on GenLayer, not on a backend LLM
       </footer>
     </div>
   );
@@ -333,6 +338,14 @@ function Home({
               Browse vaults
             </button>
           </div>
+          <p className="hint mt">
+            Live contract{" "}
+            <a href={explorerAddr(CONTRACT_ADDRESS, NETWORK_NAME)} target="_blank" rel="noreferrer" className="mono">
+              {shortAddr(CONTRACT_ADDRESS)}
+            </a>{" "}
+            on {NETWORK_META[NETWORK_NAME].label}. Vault counts below are <span className="mono">readContract</span>{" "}
+            results, not a cached backend.
+          </p>
         </div>
         <div className="panel">
           <h3>Why this is a trust problem</h3>
@@ -1039,47 +1052,66 @@ function How() {
   return (
     <section className="mt grid-2">
       <div className="panel">
-        <h3>What belongs on GenLayer</h3>
+        <h3>GenLayer is the product</h3>
         <p>
           The consensus-critical decision is: <em>does an official recall cover this specific unit, and should
-          the bond pay?</em> That decision moves GEN. It is not a chatbot answer stored on-chain.
+          the bond pay?</em> That decision moves GEN. The frontend never computes the ruling and stores it.
         </p>
-        <p className="hint">
-          Validators independently request the same FDA, NHTSA, or CPSC URL, compact the records, and ask an
-          LLM for a structured ruling. They must agree on <span className="mono">recall_found</span>,{" "}
-          <span className="mono">in_scope</span>, <span className="mono">lot_in_scope</span>, agency, and a
-          payout bucket. Reasoning text may differ.
-        </p>
-        <h3 className="mt">Sources</h3>
+        <div className="steps mt">
+          <div className="step">
+            <div className="num">1</div>
+            <div>
+              <strong>Real trust problem</strong>
+              <div className="hint">Refunds today run through the same company that shipped the defect. The bond is the recourse.</div>
+            </div>
+          </div>
+          <div className="step">
+            <div className="num">2</div>
+            <div>
+              <strong>Authoritative data</strong>
+              <div className="hint">Adjudicate() fetches live openFDA / NHTSA / CPSC. Validators re-fetch the same URLs.</div>
+            </div>
+          </div>
+          <div className="step">
+            <div className="num">3</div>
+            <div>
+              <strong>Full transaction lifecycle</strong>
+              <div className="hint">Wallet signs writeContract. UI tracks pending → proposing → committing → revealing → accepted → finalized.</div>
+            </div>
+          </div>
+        </div>
+        <h3 className="mt">Sources the contract hits</h3>
         <ul className="hint">
           <li>FDA food / drug / device enforcement APIs (openFDA)</li>
           <li>NHTSA recallsByVehicle</li>
           <li>CPSC SaferProducts recall feed</li>
         </ul>
-        <p className="hint">
-          Demo tip: scan live FDA ongoing recalls, list a matching product, fund a small bond, file a claim
-          with a public URL, then adjudicate.
-        </p>
       </div>
       <div className="panel">
-        <h3>Wallet & network</h3>
+        <h3>Wallet, network, continued use</h3>
         <p className="hint">
-          Connect MetaMask or OKX Wallet. Before every write, the app calls{" "}
-          <span className="mono">client.connect("{NETWORK_NAME}")</span> so the wallet is on GenLayer{" "}
-          {NETWORK_META[NETWORK_NAME].label} (chain ID {NETWORK_META[NETWORK_NAME].chainId}).
+          Connect MetaMask or OKX. Before every write the app calls{" "}
+          <span className="mono">client.connect("{NETWORK_NAME}")</span> so the wallet is on{" "}
+          {NETWORK_META[NETWORK_NAME].label} (chain {NETWORK_META[NETWORK_NAME].chainId}).
         </p>
         <p className="hint">
-          Get test GEN from{" "}
-          <a href={faucetUrl()} target="_blank" rel="noreferrer">
-            the official faucet
+          Contract{" "}
+          <a href={explorerAddr(CONTRACT_ADDRESS, NETWORK_NAME)} target="_blank" rel="noreferrer" className="mono">
+            {CONTRACT_ADDRESS}
           </a>
-          . Deploy the contract with GenLayer Studio or the CLI, then paste the address into{" "}
-          <span className="mono">frontend/.env</span>.
         </p>
-        <h3 className="mt">Continued use</h3>
         <p className="hint">
-          Manufacturers can keep a standing bond per SKU. Insurers can underwrite it. Consumer groups can
-          top up. The same vault keeps taking claims as new official recalls appear — no redeploy required.
+          Test GEN:{" "}
+          <a href={faucetUrl()} target="_blank" rel="noreferrer">
+            {NETWORK_NAME === "studionet" ? "Studio faucet" : "GenLayer faucet"}
+          </a>
+          .
+        </p>
+        <h3 className="mt">Why this is not the football-bets boilerplate</h3>
+        <p className="hint">
+          Escrow + reserve accounting, payable bonds, official government APIs, structured payout buckets, and
+          an honor/cancel path. A manufacturer can keep a standing bond per SKU; insurers can top it up; new
+          official recalls keep arriving at the same APIs with no redeploy.
         </p>
       </div>
     </section>
