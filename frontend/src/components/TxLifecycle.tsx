@@ -47,12 +47,17 @@ export function TxLifecycle({ snap }: { snap: ReceiptSnapshot | null }) {
       </div>
       {snap.execution ? <div className="small muted mt">Execution: {snap.execution}</div> : null}
       {snap.error ? <div className="notice error mt">{snap.error}</div> : null}
-      {(current === "FINALIZED" || current === "ACCEPTED") && !snap.error ? (
+      {snap.irreversible ? (
         <div className="notice ok mt">
-          {current === "FINALIZED"
-            ? "Consensus finalized. If this was a payout, GEN is released on finalization via the contract’s transfer message."
-            : "Consensus accepted this write. Contract state is readable. Finalization may follow."}
+          Finalized with FINISHED_WITH_RETURN. This payout is treated as irreversible.
         </div>
+      ) : current === "ACCEPTED" && !failed ? (
+        <div className="notice mt">
+          Consensus accepted. Contract state is readable. Payout is not marked irreversible until
+          FINALIZED + FINISHED_WITH_RETURN.
+        </div>
+      ) : current === "FINALIZED" && !snap.error ? (
+        <div className="notice ok mt">Consensus finalized.</div>
       ) : null}
       {current !== "FINALIZED" && current !== "ACCEPTED" && !failed ? (
         <p className="hint mt">

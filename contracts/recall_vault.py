@@ -1,22 +1,21 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-"""RecallVault — consumer recall bonds settled from official government data.
+"""RecallVault — recall bonds with sponsor-defined payouts and public-commit entitlement.
 
-A sponsor (manufacturer, retailer, insurer, or advocacy group) lists a product
-and locks GEN. A claimant files against that bond with a lot/serial and a
-public proof URL. Adjudication fetches live FDA / NHTSA / CPSC records and
-releases or rejects the claim. The Intelligent Contract — not a backend LLM —
-owns the decision that moves money.
+Entitlement model (public-commit bearer claim):
+  The claimant must publish RECALLVAULT:<product_id>:<unit_id>:<claimant> on a
+  public proof URL. Adjudication fetches that page. Payout also requires the
+  page to be a purchase/ownership record for that unit, plus official recall
+  coverage. The LLM never chooses how much to pay.
+
+Vehicle vaults pay for model-year campaign coverage after NHTSA vPIC VIN
+decode proves the unit is that make/model/year. They do not assert that a
+manufacturer VIN list includes this unrepaired VIN.
 """
 
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from genlayer import *
-
-
-# ---------------------------------------------------------------------------
-# Storage records
-# ---------------------------------------------------------------------------
 
 
 @allow_storage
@@ -34,6 +33,10 @@ class Product:
     notes: str
     bond_wei: u256
     reserved_wei: u256
+    compensation_wei: u256
+    claim_stake_wei: u256
+    claim_ttl_sec: u256
+    max_open_claims: u256
     created_at: str
     active: bool
 
@@ -46,8 +49,11 @@ class Claim:
     claimant: Address
     lot_or_serial: str
     proof_url: str
+    proof_token: str
     statement: str
-    amount_wei: u256
+    reserved_wei: u256
+    stake_wei: u256
+    expires_at: u256
     status: str
     filed_at: str
     resolved_at: str
@@ -59,6 +65,9 @@ class Claim:
     classification: str
     reasoning: str
     payout_wei: u256
+    entitled: bool
+    lot_in_scope: bool
+    vin_matches: bool
 
 
 @gl.evm.contract_interface
@@ -70,22 +79,26 @@ class _Recipient:
         pass
 
 
-# ---------------------------------------------------------------------------
-# Helpers (deterministic)
-# ---------------------------------------------------------------------------
-
 ALLOWED_CATEGORIES = ("food", "drug", "device", "vehicle", "consumer")
 OPEN_STATUS = "open"
 HONORED_STATUS = "honored"
 PAID_STATUS = "paid"
 REJECTED_STATUS = "rejected"
 CANCELLED_STATUS = "cancelled"
-
+EXPIRED_STATUS = "expired"
+ENTITLEMENT_MODEL = "public_commit_bearer"
+DEFAULT_TTL_SEC = 259200
+MIN_TTL_SEC = 3600
+MAX_TTL_SEC = 2592000
 ZERO_ADDR = Address("0x0000000000000000000000000000000000000000")
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _now_unix() -> int:
+    return int(datetime.now(timezone.utc).timestamp())
 
 
 def _sanitize(text: str, limit: int = 120) -> str:
@@ -96,6 +109,25 @@ def _sanitize(text: str, limit: int = 120) -> str:
         else:
             cleaned.append(" ")
     return "".join(cleaned).strip()[:limit]
+
+
+def _normalize_unit(text: str, category: str) -> str:
+    raw = "".join(ch for ch in text.strip().upper() if ch.isalnum() or ch in "-_")
+    if category == "vehicle":
+        vin = "".join(ch for ch in raw if ch.isalnum())
+        return vin
+    return raw[:80]
+
+
+def _valid_vin(vin: str) -> bool:
+    if len(vin) != 17:
+        return False
+    for ch in vin:
+        if ch in "IOQ":
+            return False
+        if not ch.isalnum():
+            return False
+    return True
 
 
 def _url_encode(text: str) -> str:
@@ -134,20 +166,18 @@ def _truthy(value) -> bool:
     return False
 
 
-def _bucket_payout_bps(bps: int) -> int:
-    if bps <= 0:
-        return 0
-    if bps < 3750:
-        return 2500
-    if bps < 6250:
-        return 5000
-    if bps < 8750:
-        return 7500
-    return 10000
+def _norm_name(value: str) -> str:
+    return "".join(ch for ch in value.upper() if ch.isalnum())
 
 
-def _official_urls(category: str, search_query: str, make: str, model: str, year: str) -> list:
-    """Deterministic official endpoints. Validators must hit the same URLs."""
+def _official_urls(
+    category: str,
+    search_query: str,
+    make: str,
+    model: str,
+    year: str,
+    vin: str,
+) -> list:
     q = _url_encode(search_query)
     urls = []
     if category == "food":
@@ -183,6 +213,12 @@ def _official_urls(category: str, search_query: str, make: str, model: str, year
             + "&modelYear="
             + _url_encode(year)
         )
+        if _valid_vin(vin):
+            urls.append(
+                "https://vpic.nhtsa.dot.gov/api/vehicles/DecodeVinValues/"
+                + vin
+                + "?format=json"
+            )
     else:
         urls.append(
             "https://www.saferproducts.gov/RestWebServices/Recall?format=json&RecallTitle="
@@ -203,16 +239,36 @@ def _body_text(res) -> str:
     return str(body)
 
 
-def _compact_records(category: str, raw_text: str) -> list:
-    """Keep only stable official fields so leader and validators share structure."""
+def _compact_vpic(raw_text: str) -> dict:
+    try:
+        data = json.loads(raw_text)
+    except Exception:
+        return {"error": "vpic_parse_failed"}
+    results = []
+    if isinstance(data, dict):
+        results = data.get("Results") or data.get("results") or []
+    if isinstance(results, dict):
+        results = [results]
+    if not results:
+        return {"error": "vpic_empty"}
+    row = results[0] if isinstance(results[0], dict) else {}
+    return {
+        "make": str(row.get("Make") or ""),
+        "model": str(row.get("Model") or ""),
+        "year": str(row.get("ModelYear") or ""),
+        "error_code": str(row.get("ErrorCode") or ""),
+    }
+
+
+def _compact_records(category: str, raw_text: str, url: str) -> list:
+    if "DecodeVinValues" in url:
+        return [_compact_vpic(raw_text)]
     try:
         data = json.loads(raw_text)
     except Exception:
         return [{"raw_excerpt": raw_text[:1500]}]
-
     if isinstance(data, dict) and data.get("error"):
         return [{"api_error": str(data.get("error"))}]
-
     records = []
     if category == "vehicle":
         results = []
@@ -234,7 +290,6 @@ def _compact_records(category: str, raw_text: str) -> list:
                 }
             )
         return records
-
     if isinstance(data, list):
         rows = data
     elif isinstance(data, dict):
@@ -243,7 +298,6 @@ def _compact_records(category: str, raw_text: str) -> list:
             rows = [rows]
     else:
         rows = []
-
     for row in rows[:8]:
         if not isinstance(row, dict):
             continue
@@ -268,6 +322,16 @@ def _compact_records(category: str, raw_text: str) -> list:
     return records
 
 
+def _vin_matches_listing(vpic: dict, make: str, model: str, year: str) -> bool:
+    if not vpic or vpic.get("error"):
+        return False
+    return (
+        _norm_name(vpic.get("make") or "") == _norm_name(make)
+        and _norm_name(vpic.get("model") or "") == _norm_name(model)
+        and str(vpic.get("year") or "").strip() == str(year).strip()
+    )
+
+
 def _parse_llm_json(raw) -> dict:
     if isinstance(raw, dict):
         return raw
@@ -283,50 +347,52 @@ def _parse_llm_json(raw) -> dict:
     return json.loads(text[first : last + 1])
 
 
-def _normalize_decision(raw: dict) -> dict:
+def _normalize_decision(raw: dict, token_found: bool, vin_matches: bool, category: str) -> dict:
     agency = str(raw.get("agency") or "NONE").strip().upper()
     if agency not in ("FDA", "NHTSA", "CPSC", "NONE"):
         agency = "NONE"
-    payout_bps = max(0, min(10000, _as_int(raw.get("payout_bps"))))
     recall_found = _truthy(raw.get("recall_found"))
     in_scope = _truthy(raw.get("in_scope"))
     lot_in_scope = _truthy(raw.get("lot_in_scope"))
-    if not recall_found or not in_scope:
-        payout_bps = 0
+    entitled_document = _truthy(raw.get("entitled_document"))
+    if category == "vehicle":
+        lot_in_scope = bool(vin_matches and recall_found)
+        in_scope = bool(in_scope and vin_matches and recall_found)
+    if not recall_found:
         in_scope = False
+        lot_in_scope = False
+    entitled = bool(token_found and entitled_document)
     return {
         "recall_found": recall_found,
         "in_scope": in_scope,
         "lot_in_scope": lot_in_scope,
+        "entitled": entitled,
+        "entitled_document": entitled_document,
+        "token_found": token_found,
+        "vin_matches": vin_matches,
         "agency": agency,
         "recall_number": str(raw.get("recall_number") or "")[:80],
         "matched_product": str(raw.get("matched_product") or "")[:200],
         "reason_for_recall": str(raw.get("reason_for_recall") or "")[:400],
         "classification": str(raw.get("classification") or "")[:40],
-        "payout_bps": payout_bps,
         "reasoning": str(raw.get("reasoning") or "")[:800],
     }
 
 
 def _decisions_equivalent(leader: dict, validator: dict) -> bool:
-    if leader["recall_found"] != validator["recall_found"]:
-        return False
-    if leader["in_scope"] != validator["in_scope"]:
-        return False
-    if leader["lot_in_scope"] != validator["lot_in_scope"]:
-        return False
-    if leader["agency"] != validator["agency"]:
-        return False
-    lb = _bucket_payout_bps(leader["payout_bps"])
-    vb = _bucket_payout_bps(validator["payout_bps"])
-    if lb == 0 or vb == 0:
-        return lb == vb
-    return lb == vb
-
-
-# ---------------------------------------------------------------------------
-# Contract
-# ---------------------------------------------------------------------------
+    keys = (
+        "recall_found",
+        "in_scope",
+        "lot_in_scope",
+        "entitled",
+        "token_found",
+        "vin_matches",
+        "agency",
+    )
+    for key in keys:
+        if leader.get(key) != validator.get(key):
+            return False
+    return True
 
 
 class RecallVault(gl.Contract):
@@ -335,15 +401,16 @@ class RecallVault(gl.Contract):
     next_claim_id: u256
     products: TreeMap[str, Product]
     claims: TreeMap[str, Claim]
+    claimed_units: TreeMap[str, str]
     protocol_name: str
+    entitlement_model: str
 
     def __init__(self):
         self.owner = gl.message.sender_address
         self.next_product_id = u256(1)
         self.next_claim_id = u256(1)
         self.protocol_name = "RecallVault"
-
-    # -- internal -----------------------------------------------------------
+        self.entitlement_model = ENTITLEMENT_MODEL
 
     def _product_dict(self, p: Product) -> dict:
         available = int(p.bond_wei) - int(p.reserved_wei)
@@ -363,8 +430,16 @@ class RecallVault(gl.Contract):
             "bond_wei": str(int(p.bond_wei)),
             "reserved_wei": str(int(p.reserved_wei)),
             "available_wei": str(available),
+            "compensation_wei": str(int(p.compensation_wei)),
+            "claim_stake_wei": str(int(p.claim_stake_wei)),
+            "claim_ttl_sec": str(int(p.claim_ttl_sec)),
+            "max_open_claims": str(int(p.max_open_claims)),
             "created_at": p.created_at,
             "active": p.active,
+            "entitlement_model": ENTITLEMENT_MODEL,
+            "vehicle_scope": "model_year_campaign_after_vin_decode"
+            if p.category == "vehicle"
+            else "lot_or_serial_in_official_record",
         }
 
     def _claim_dict(self, c: Claim) -> dict:
@@ -374,8 +449,12 @@ class RecallVault(gl.Contract):
             "claimant": c.claimant.as_hex,
             "lot_or_serial": c.lot_or_serial,
             "proof_url": c.proof_url,
+            "proof_token": c.proof_token,
             "statement": c.statement,
-            "amount_wei": str(int(c.amount_wei)),
+            "amount_wei": str(int(c.reserved_wei)),
+            "reserved_wei": str(int(c.reserved_wei)),
+            "stake_wei": str(int(c.stake_wei)),
+            "expires_at": str(int(c.expires_at)),
             "status": c.status,
             "filed_at": c.filed_at,
             "resolved_at": c.resolved_at,
@@ -387,6 +466,9 @@ class RecallVault(gl.Contract):
             "classification": c.classification,
             "reasoning": c.reasoning,
             "payout_wei": str(int(c.payout_wei)),
+            "entitled": c.entitled,
+            "lot_in_scope": c.lot_in_scope,
+            "vin_matches": c.vin_matches,
         }
 
     def _require_product(self, product_id: str) -> Product:
@@ -402,10 +484,27 @@ class RecallVault(gl.Contract):
     def _available(self, product: Product) -> int:
         return int(product.bond_wei) - int(product.reserved_wei)
 
+    def _open_claim_count(self, product_id: str) -> int:
+        n = 0
+        for _k, c in self.claims.items():
+            if c.product_id == product_id and c.status == OPEN_STATUS:
+                n += 1
+        return n
+
+    def _unit_key(self, product_id: str, unit: str) -> str:
+        return product_id + "|" + unit
+
     def _pay(self, to: Address, amount: u256) -> None:
         if int(amount) <= 0:
             return
         _Recipient(to).emit_transfer(value=amount)
+
+    def _unreserve(self, product: Product, amount: u256) -> None:
+        reserved = int(product.reserved_wei) - int(amount)
+        product.reserved_wei = u256(reserved if reserved > 0 else 0)
+
+    def _slash_stake_to_bond(self, product: Product, stake: u256) -> None:
+        product.bond_wei = u256(int(product.bond_wei) + int(stake))
 
     def _evaluate_claim(self, snapshot: dict) -> dict:
         urls = _official_urls(
@@ -414,10 +513,14 @@ class RecallVault(gl.Contract):
             snapshot["vehicle_make"],
             snapshot["vehicle_model"],
             snapshot["vehicle_year"],
+            snapshot["lot_or_serial"],
         )
+        token = snapshot["proof_token"]
+        proof_url = snapshot["proof_url"]
 
         def fetch_and_judge() -> dict:
             bundles = []
+            vpic = {}
             for url in urls:
                 try:
                     res = gl.nondet.web.get(url)
@@ -425,54 +528,92 @@ class RecallVault(gl.Contract):
                     text = _body_text(res)
                     if status >= 500:
                         raise gl.vm.UserError("official source unavailable: " + str(status))
-                    records = _compact_records(snapshot["category"], text)
+                    records = _compact_records(snapshot["category"], text, url)
+                    if "DecodeVinValues" in url and records:
+                        vpic = records[0] if isinstance(records[0], dict) else {}
                     bundles.append({"url": url, "status": status, "records": records})
                 except gl.vm.UserError:
                     raise
                 except Exception as exc:
                     bundles.append({"url": url, "status": 0, "error": str(exc)[:200], "records": []})
 
-            prompt = f"""You are the RecallVault adjudicator. Decide whether a consumer claim
-is covered by an OFFICIAL government product recall.
+            proof_text = ""
+            try:
+                rendered = gl.nondet.web.render(proof_url, mode="text")
+                proof_text = str(rendered)[:8000]
+            except Exception:
+                try:
+                    pres = gl.nondet.web.get(proof_url)
+                    proof_text = _body_text(pres)[:8000]
+                except Exception as exc:
+                    proof_text = "PROOF_FETCH_FAILED " + str(exc)[:200]
 
-Use ONLY the official records below. Do not invent recalls. If the records do
-not clearly cover this specific product / lot / vehicle, deny the claim.
+            token_found = token.lower() in proof_text.lower()
+            vin_matches = False
+            if snapshot["category"] == "vehicle":
+                vin_matches = _vin_matches_listing(
+                    vpic,
+                    snapshot["vehicle_make"],
+                    snapshot["vehicle_model"],
+                    snapshot["vehicle_year"],
+                )
+
+            prompt = f"""You are the RecallVault adjudicator.
+
+Two separate questions:
+A) OFFICIAL RECALL SCOPE — use only the government records.
+B) ENTITLEMENT DOCUMENT — use only the public proof page. The page must look like
+   a purchase receipt, invoice, title, registration, or other ownership record
+   for THIS unit. A random webpage that merely contains the commit token is NOT
+   an ownership record.
+
+Do not invent recalls or receipts. Prefer denial when evidence is thin.
 
 PRODUCT
 - brand: {snapshot["brand"]}
 - name: {snapshot["name"]}
 - category: {snapshot["category"]}
-- search_query: {snapshot["search_query"]}
-- vehicle: {snapshot["vehicle_make"]} {snapshot["vehicle_model"]} {snapshot["vehicle_year"]}
-- sponsor notes: {snapshot["notes"]}
+- vehicle listing: {snapshot["vehicle_make"]} {snapshot["vehicle_model"]} {snapshot["vehicle_year"]}
+- notes: {snapshot["notes"]}
 
-CLAIM
-- lot_or_serial: {snapshot["lot_or_serial"]}
-- claimant_statement: {snapshot["statement"]}
-- proof_url: {snapshot["proof_url"]}
+CLAIMED UNIT: {snapshot["lot_or_serial"]}
+REQUIRED COMMIT TOKEN: {token}
+TOKEN_FOUND_BY_CONTRACT: {token_found}
+VIN_DECODES_TO_LISTING (vPIC): {vin_matches}
 
-OFFICIAL RECORDS (FDA / NHTSA / CPSC)
-{json.dumps(bundles)[:12000]}
+Vehicle vaults are MODEL-YEAR CAMPAIGN COVERAGE only. A matching VIN decode
+proves the unit is that make/model/year. Do not treat YMM recalls as proof that
+this exact VIN is on a manufacturer unrepaired-VIN list.
+
+OFFICIAL RECORDS
+{json.dumps(bundles)[:10000]}
+
+PROOF PAGE (fetched)
+{proof_text[:4000]}
 
 Rules:
-1. recall_found = true only if an official record is about this product family.
-2. in_scope = true only if THIS unit (lot, serial, VIN fragment, model year) is
-   covered by that record, or the record has no lot restriction and the product
-   clearly matches.
-3. lot_in_scope = true if the lot/serial is listed or the recall has no lot limit.
-4. agency must be FDA, NHTSA, CPSC, or NONE.
-5. payout_bps is 0-10000. Use 10000 for a clear full match, 5000 if coverage
-   is partial, 0 if denied. Never pay when in_scope is false.
-6. Prefer denial when evidence is thin, contradictory, or off-product.
+1. recall_found = true only if an official record is about this product / YMM.
+2. in_scope = true only if official records cover this product family.
+3. lot_in_scope = true only if the claimed lot/serial is in the official code
+   info, OR (food/drug/device) the recall has no lot restriction and the product
+   clearly matches. For vehicles the contract overwrites lot_in_scope from vPIC.
+4. entitled_document = true only if the proof page is a purchase/ownership
+   record for this unit (receipt, invoice, title, registration). GitHub READMEs
+   and unrelated pages are false even if the token is present.
+5. agency is FDA, NHTSA, CPSC, or NONE.
 
-Return JSON with keys:
-recall_found (bool), in_scope (bool), lot_in_scope (bool),
-agency (FDA|NHTSA|CPSC|NONE), recall_number (str), matched_product (str),
-reason_for_recall (str), classification (str), payout_bps (int 0-10000),
-reasoning (str, 2-4 sentences grounded in the official records).
+Return JSON keys:
+recall_found, in_scope, lot_in_scope, entitled_document (bools),
+agency, recall_number, matched_product, reason_for_recall, classification,
+reasoning (2-4 sentences grounded in the fetched records and proof page).
 """
             raw = gl.nondet.exec_prompt(prompt, response_format="json")
-            return _normalize_decision(_parse_llm_json(raw))
+            return _normalize_decision(
+                _parse_llm_json(raw),
+                token_found,
+                vin_matches,
+                snapshot["category"],
+            )
 
         def validator_fn(leader_result) -> bool:
             if not isinstance(leader_result, gl.vm.Return):
@@ -486,7 +627,15 @@ reasoning (str, 2-4 sentences grounded in the official records).
 
         return gl.vm.run_nondet_unsafe(fetch_and_judge, validator_fn)
 
-    # -- writes -------------------------------------------------------------
+    def _eligible(self, decision: dict) -> bool:
+        if not decision.get("lot_in_scope"):
+            return False
+        return bool(
+            decision.get("entitled")
+            and decision.get("recall_found")
+            and decision.get("in_scope")
+            and decision.get("lot_in_scope")
+        )
 
     @gl.public.write.payable
     def list_product(
@@ -499,6 +648,10 @@ reasoning (str, 2-4 sentences grounded in the official records).
         vehicle_model: str,
         vehicle_year: str,
         notes: str,
+        compensation_wei: str,
+        claim_stake_wei: str,
+        claim_ttl_sec: str,
+        max_open_claims: str,
     ) -> None:
         cat = category.strip().lower()
         if cat not in ALLOWED_CATEGORIES:
@@ -513,11 +666,31 @@ reasoning (str, 2-4 sentences grounded in the official records).
         year_s = _sanitize(vehicle_year, 8)
         if cat == "vehicle" and (not make_s or not model_s or not year_s):
             raise gl.vm.UserError("vehicle listings need make, model, and year")
+        compensation = u256(int(compensation_wei))
+        stake = u256(int(claim_stake_wei))
+        if int(compensation) <= 0:
+            raise gl.vm.UserError("compensation_wei must be positive")
+        if int(stake) <= 0:
+            raise gl.vm.UserError("claim_stake_wei must be positive")
+        ttl = int(claim_ttl_sec) if str(claim_ttl_sec).strip() else DEFAULT_TTL_SEC
+        if ttl <= 0:
+            ttl = DEFAULT_TTL_SEC
+        if ttl < MIN_TTL_SEC:
+            ttl = MIN_TTL_SEC
+        if ttl > MAX_TTL_SEC:
+            ttl = MAX_TTL_SEC
+        max_open = int(max_open_claims) if str(max_open_claims).strip() else 3
+        if max_open < 1:
+            max_open = 1
+        if max_open > 20:
+            max_open = 20
+        bond = gl.message.value
+        if int(bond) < int(compensation):
+            raise gl.vm.UserError("initial bond must cover at least one compensation")
 
         pid = str(int(self.next_product_id))
         self.next_product_id = u256(int(self.next_product_id) + 1)
-        bond = gl.message.value
-        product = Product(
+        self.products[pid] = Product(
             id=pid,
             sponsor=gl.message.sender_address,
             brand=brand_s,
@@ -530,10 +703,13 @@ reasoning (str, 2-4 sentences grounded in the official records).
             notes=_sanitize(notes, 280),
             bond_wei=bond,
             reserved_wei=u256(0),
+            compensation_wei=compensation,
+            claim_stake_wei=stake,
+            claim_ttl_sec=u256(ttl),
+            max_open_claims=u256(max_open),
             created_at=_now_iso(),
             active=True,
         )
-        self.products[pid] = product
 
     @gl.public.write.payable
     def fund_bond(self, product_id: str) -> None:
@@ -565,31 +741,43 @@ reasoning (str, 2-4 sentences grounded in the official records).
         product.bond_wei = u256(int(product.bond_wei) - int(amount))
         self._pay(product.sponsor, amount)
 
-    @gl.public.write
+    @gl.public.write.payable
     def file_claim(
         self,
         product_id: str,
         lot_or_serial: str,
         proof_url: str,
         statement: str,
-        amount_wei: str,
     ) -> None:
         product = self._require_product(product_id)
         if not product.active:
             raise gl.vm.UserError("product is inactive")
-        amount = u256(int(amount_wei))
-        if int(amount) <= 0:
-            raise gl.vm.UserError("claim amount must be positive")
-        if int(amount) > self._available(product):
-            raise gl.vm.UserError("claim exceeds available bond")
+        stake = gl.message.value
+        if int(stake) < int(product.claim_stake_wei):
+            raise gl.vm.UserError("send at least the sponsor-defined claim stake")
+        compensation = product.compensation_wei
+        if int(compensation) > self._available(product):
+            raise gl.vm.UserError("available bond is below sponsor compensation")
+        if self._open_claim_count(product_id) >= int(product.max_open_claims):
+            raise gl.vm.UserError("vault is at max open claims")
         url = proof_url.strip()
-        if not (url.startswith("https://") or url.startswith("http://")):
-            raise gl.vm.UserError("proof_url must be a public http(s) URL")
-        lot = _sanitize(lot_or_serial, 80)
-        if not lot:
-            raise gl.vm.UserError("lot or serial is required")
+        if not url.startswith("https://"):
+            raise gl.vm.UserError("proof_url must be a public https URL")
+        unit = _normalize_unit(lot_or_serial, product.category)
+        if not unit:
+            raise gl.vm.UserError("lot, serial, or VIN is required")
+        if product.category == "vehicle" and not _valid_vin(unit):
+            raise gl.vm.UserError("vehicle claims require a 17-character VIN")
 
         sender = gl.message.sender_address
+        unit_key = self._unit_key(product_id, unit)
+        if unit_key in self.claimed_units:
+            existing_id = self.claimed_units[unit_key]
+            if existing_id and existing_id in self.claims:
+                existing = self.claims[existing_id]
+                if existing.status in (OPEN_STATUS, PAID_STATUS, HONORED_STATUS):
+                    raise gl.vm.UserError("this unit already has an active or paid claim")
+
         for _cid, existing in self.claims.items():
             if (
                 existing.product_id == product_id
@@ -598,17 +786,26 @@ reasoning (str, 2-4 sentences grounded in the official records).
             ):
                 raise gl.vm.UserError("you already have an open claim on this product")
 
+        token = "RECALLVAULT:" + product_id + ":" + unit + ":" + sender.as_hex.lower()
         cid = str(int(self.next_claim_id))
         self.next_claim_id = u256(int(self.next_claim_id) + 1)
-        product.reserved_wei = u256(int(product.reserved_wei) + int(amount))
-        claim = Claim(
+        product.reserved_wei = u256(int(product.reserved_wei) + int(compensation))
+        extra = int(stake) - int(product.claim_stake_wei)
+        recorded_stake = product.claim_stake_wei
+        if extra > 0:
+            product.bond_wei = u256(int(product.bond_wei) + extra)
+        expires = u256(_now_unix() + int(product.claim_ttl_sec))
+        self.claims[cid] = Claim(
             id=cid,
             product_id=product_id,
             claimant=sender,
-            lot_or_serial=lot,
+            lot_or_serial=unit,
             proof_url=url[:300],
+            proof_token=token,
             statement=_sanitize(statement, 400),
-            amount_wei=amount,
+            reserved_wei=compensation,
+            stake_wei=recorded_stake,
+            expires_at=expires,
             status=OPEN_STATUS,
             filed_at=_now_iso(),
             resolved_at="",
@@ -620,8 +817,11 @@ reasoning (str, 2-4 sentences grounded in the official records).
             classification="",
             reasoning="",
             payout_wei=u256(0),
+            entitled=False,
+            lot_in_scope=False,
+            vin_matches=False,
         )
-        self.claims[cid] = claim
+        self.claimed_units[unit_key] = cid
 
     @gl.public.write
     def cancel_claim(self, claim_id: str) -> None:
@@ -631,40 +831,62 @@ reasoning (str, 2-4 sentences grounded in the official records).
         if gl.message.sender_address != claim.claimant:
             raise gl.vm.UserError("only the claimant can cancel")
         product = self._require_product(claim.product_id)
-        reserved = int(product.reserved_wei) - int(claim.amount_wei)
-        product.reserved_wei = u256(reserved if reserved > 0 else 0)
+        self._unreserve(product, claim.reserved_wei)
+        self._pay(claim.claimant, claim.stake_wei)
         claim.status = CANCELLED_STATUS
         claim.resolved_at = _now_iso()
+        unit_key = self._unit_key(claim.product_id, claim.lot_or_serial)
+        if unit_key in self.claimed_units and self.claimed_units[unit_key] == claim.id:
+            self.claimed_units[unit_key] = ""
+
+    @gl.public.write
+    def release_expired(self, claim_id: str) -> None:
+        """Permissionless liveness: unlock a timed-out reserve and slash the stake into the bond."""
+        claim = self._require_claim(claim_id)
+        if claim.status != OPEN_STATUS:
+            raise gl.vm.UserError("claim is not open")
+        if _now_unix() < int(claim.expires_at):
+            raise gl.vm.UserError("claim has not expired")
+        product = self._require_product(claim.product_id)
+        self._unreserve(product, claim.reserved_wei)
+        self._slash_stake_to_bond(product, claim.stake_wei)
+        claim.status = EXPIRED_STATUS
+        claim.resolved_at = _now_iso()
+        claim.reasoning = "Expired without adjudication. Stake added to the bond. Reserve released."
+        unit_key = self._unit_key(claim.product_id, claim.lot_or_serial)
+        if unit_key in self.claimed_units and self.claimed_units[unit_key] == claim.id:
+            self.claimed_units[unit_key] = ""
 
     @gl.public.write
     def honor_claim(self, claim_id: str) -> None:
-        """Sponsor accepts the claim without waiting for official-data consensus."""
         claim = self._require_claim(claim_id)
         if claim.status != OPEN_STATUS:
             raise gl.vm.UserError("claim is not open")
         product = self._require_product(claim.product_id)
         if gl.message.sender_address != product.sponsor:
             raise gl.vm.UserError("only the sponsor can honor a claim")
-        payout = claim.amount_wei
-        reserved = int(product.reserved_wei) - int(claim.amount_wei)
-        product.reserved_wei = u256(reserved if reserved > 0 else 0)
-        bond = int(product.bond_wei) - int(payout)
-        product.bond_wei = u256(bond if bond > 0 else 0)
+        payout = product.compensation_wei
+        if int(payout) > int(product.bond_wei):
+            payout = product.bond_wei
+        self._unreserve(product, claim.reserved_wei)
+        product.bond_wei = u256(int(product.bond_wei) - int(payout))
         claim.status = HONORED_STATUS
         claim.payout_wei = payout
+        claim.entitled = True
+        claim.lot_in_scope = True
         claim.resolved_at = _now_iso()
         claim.adjudicator = gl.message.sender_address
-        claim.reasoning = "Sponsor honored the claim without official-data adjudication."
-        self._pay(claim.claimant, payout)
+        claim.reasoning = "Sponsor honored the claim. Payout is the vault compensation, not a claimant-chosen amount."
+        self._pay(claim.claimant, u256(int(payout) + int(claim.stake_wei)))
 
     @gl.public.write
     def adjudicate(self, claim_id: str) -> None:
-        """Consensus-critical path: fetch official recalls and settle the claim."""
         claim = self._require_claim(claim_id)
         if claim.status != OPEN_STATUS:
             raise gl.vm.UserError("claim is not open")
+        if _now_unix() >= int(claim.expires_at):
+            raise gl.vm.UserError("claim expired; call release_expired")
         product = self._require_product(claim.product_id)
-
         snapshot = {
             "brand": product.brand,
             "name": product.name,
@@ -677,12 +899,10 @@ reasoning (str, 2-4 sentences grounded in the official records).
             "lot_or_serial": claim.lot_or_serial,
             "statement": claim.statement,
             "proof_url": claim.proof_url,
+            "proof_token": claim.proof_token,
         }
-
         decision = self._evaluate_claim(snapshot)
-
-        reserved = int(product.reserved_wei) - int(claim.amount_wei)
-        product.reserved_wei = u256(reserved if reserved > 0 else 0)
+        self._unreserve(product, claim.reserved_wei)
         claim.adjudicator = gl.message.sender_address
         claim.resolved_at = _now_iso()
         claim.agency = decision["agency"]
@@ -691,21 +911,25 @@ reasoning (str, 2-4 sentences grounded in the official records).
         claim.reason_for_recall = decision["reason_for_recall"]
         claim.classification = decision["classification"]
         claim.reasoning = decision["reasoning"]
+        claim.entitled = bool(decision["entitled"])
+        claim.lot_in_scope = bool(decision["lot_in_scope"])
+        claim.vin_matches = bool(decision["vin_matches"])
 
-        if decision["in_scope"] and decision["payout_bps"] > 0:
-            payout = u256(int(claim.amount_wei) * int(decision["payout_bps"]) // 10000)
+        if self._eligible(decision):
+            payout = product.compensation_wei
             if int(payout) > int(product.bond_wei):
                 payout = product.bond_wei
-            bond = int(product.bond_wei) - int(payout)
-            product.bond_wei = u256(bond if bond > 0 else 0)
+            product.bond_wei = u256(int(product.bond_wei) - int(payout))
             claim.payout_wei = payout
             claim.status = PAID_STATUS
-            self._pay(claim.claimant, payout)
+            self._pay(claim.claimant, u256(int(payout) + int(claim.stake_wei)))
         else:
+            self._slash_stake_to_bond(product, claim.stake_wei)
             claim.payout_wei = u256(0)
             claim.status = REJECTED_STATUS
-
-    # -- views --------------------------------------------------------------
+            unit_key = self._unit_key(claim.product_id, claim.lot_or_serial)
+            if unit_key in self.claimed_units and self.claimed_units[unit_key] == claim.id:
+                self.claimed_units[unit_key] = ""
 
     @gl.public.view
     def get_protocol(self) -> dict:
@@ -729,6 +953,7 @@ reasoning (str, 2-4 sentences grounded in the official records).
             "total_bond_wei": str(total_bond),
             "next_product_id": str(int(self.next_product_id)),
             "next_claim_id": str(int(self.next_claim_id)),
+            "entitlement_model": self.entitlement_model,
         }
 
     @gl.public.view
@@ -763,14 +988,34 @@ reasoning (str, 2-4 sentences grounded in the official records).
         vehicle_make: str,
         vehicle_model: str,
         vehicle_year: str,
+        vin: str,
     ) -> dict:
-        """Lets the UI show the exact official URLs the contract will fetch."""
         cat = category.strip().lower()
+        unit = _normalize_unit(vin, cat)
         urls = _official_urls(
             cat,
             _sanitize(search_query, 120),
             _sanitize(vehicle_make, 40),
             _sanitize(vehicle_model, 60),
             _sanitize(vehicle_year, 8),
+            unit,
         )
-        return {"category": cat, "urls": urls}
+        return {
+            "category": cat,
+            "urls": urls,
+            "entitlement_model": ENTITLEMENT_MODEL,
+            "vehicle_scope": "model_year_campaign_after_vin_decode"
+            if cat == "vehicle"
+            else "lot_or_serial_in_official_record",
+        }
+
+    @gl.public.view
+    def preview_proof_token(self, product_id: str, lot_or_serial: str, claimant: str) -> dict:
+        product = self._require_product(product_id)
+        unit = _normalize_unit(lot_or_serial, product.category)
+        addr = Address(claimant).as_hex.lower()
+        token = "RECALLVAULT:" + product_id + ":" + unit + ":" + addr
+        return {
+            "token": token,
+            "instruction": "Publish this exact token on the public https proof page before filing.",
+        }

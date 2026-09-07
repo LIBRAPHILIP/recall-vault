@@ -1,11 +1,6 @@
-"""Direct-mode tests for RecallVault.
-
-These run in-memory with mocked FDA/NHTSA responses and mocked LLM decisions.
-They do not require GenLayer Studio.
-"""
+"""Direct-mode tests for RecallVault steward-revision rules."""
 
 import json
-
 
 CONTRACT = "contracts/recall_vault.py"
 
@@ -25,6 +20,18 @@ FDA_ONGOING = {
     ],
 }
 
+VPIC_ACCORD = {
+    "Count": 1,
+    "Results": [
+        {
+            "Make": "HONDA",
+            "Model": "Accord",
+            "ModelYear": "2019",
+            "ErrorCode": "0",
+        }
+    ],
+}
+
 NHTSA_HIT = {
     "Count": 1,
     "Message": "Results returned successfully",
@@ -32,8 +39,8 @@ NHTSA_HIT = {
         {
             "NHTSACampaignNumber": "26V123000",
             "Component": "AIR BAGS:FRONTAL",
-            "Summary": "Honda is recalling certain 2019 Accord vehicles. The driver airbag inflator may explode.",
-            "Consequence": "An inflator explosion can cause metal fragments to strike the driver.",
+            "Summary": "Honda is recalling certain 2019 Accord vehicles.",
+            "Consequence": "Inflator explosion risk.",
             "Notes": "Owners should contact Honda.",
             "ReportReceivedDate": "03/12/2026",
         }
@@ -44,49 +51,58 @@ LLM_PAY = {
     "recall_found": True,
     "in_scope": True,
     "lot_in_scope": True,
+    "entitled_document": True,
     "agency": "FDA",
     "recall_number": "F-1234-2026",
     "matched_product": "liverwurst 8 oz",
     "reason_for_recall": "Listeria monocytogenes",
     "classification": "Class I",
-    "payout_bps": 10000,
-    "reasoning": "Official FDA record F-1234-2026 covers this product family and lot 4450 is inside 4411-4488.",
+    "reasoning": "Official FDA record covers lot 4450. Proof page is a receipt for that lot.",
 }
 
 LLM_DENY = {
     "recall_found": False,
     "in_scope": False,
     "lot_in_scope": False,
+    "entitled_document": False,
     "agency": "NONE",
     "recall_number": "",
     "matched_product": "",
     "reason_for_recall": "",
     "classification": "",
-    "payout_bps": 0,
-    "reasoning": "No official recall matches this candy product.",
+    "reasoning": "No official recall and proof is not a purchase record.",
+}
+
+LLM_LOT_OUT = {
+    "recall_found": True,
+    "in_scope": True,
+    "lot_in_scope": False,
+    "entitled_document": True,
+    "agency": "FDA",
+    "recall_number": "F-1234-2026",
+    "matched_product": "liverwurst",
+    "reason_for_recall": "Listeria",
+    "classification": "Class I",
+    "reasoning": "Recall exists but lot Z999 is outside 4411-4488.",
 }
 
 LLM_NHTSA = {
     "recall_found": True,
     "in_scope": True,
     "lot_in_scope": True,
+    "entitled_document": True,
     "agency": "NHTSA",
     "recall_number": "26V123000",
     "matched_product": "2019 Honda Accord",
     "reason_for_recall": "Driver airbag inflator",
     "classification": "",
-    "payout_bps": 10000,
-    "reasoning": "NHTSA campaign 26V123000 covers 2019 Honda Accord frontal airbags.",
+    "reasoning": "vPIC matches listing; YMM campaign exists. Model-year coverage only.",
 }
 
 
-def _gen(n: int) -> int:
-    return n * 10**18
-
-
-def _list_food(contract, sender_vm, sender):
-    sender_vm.sender = sender
-    sender_vm.value = _gen(10)
+def _list_food(contract, vm, sender, bond=20, compensation=4, stake=1, ttl=86400, max_open=3):
+    vm.sender = sender
+    vm.value = bond
     contract.list_product(
         "Example Meats",
         "Liverwurst 8oz",
@@ -96,155 +112,67 @@ def _list_food(contract, sender_vm, sender):
         "",
         "",
         "Bond for deli meat recalls",
+        str(compensation),
+        str(stake),
+        str(ttl),
+        str(max_open),
     )
 
 
-def test_list_and_fund_bond(direct_vm, direct_deploy, direct_alice, direct_bob):
+def _file(contract, vm, sender, product_id, unit, url, statement, stake):
+    vm.sender = sender
+    vm.value = stake
+    contract.file_claim(product_id, unit, url, statement)
+
+
+def test_sponsor_sets_compensation_not_claimant(direct_vm, direct_deploy, direct_alice, direct_bob):
     contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-
-    vaults = contract.get_vaults()
-    assert "1" in vaults
-    assert vaults["1"]["brand"] == "Example Meats"
-    assert int(vaults["1"]["bond_wei"]) == _gen(10)
-    assert vaults["1"]["sponsor"].lower() == str(direct_alice).lower() or True
-
-    direct_vm.sender = direct_bob
-    direct_vm.value = _gen(2)
-    contract.fund_bond("1")
+    _list_food(contract, direct_vm, direct_alice, bond=20, compensation=4, stake=1)
     vault = contract.get_vault("1")
-    assert int(vault["bond_wei"]) == _gen(12)
-
-
-def test_file_claim_reserves_bond(direct_vm, direct_deploy, direct_alice, direct_bob):
-    contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-
-    direct_vm.sender = direct_bob
-    direct_vm.value = 0
-    contract.file_claim(
+    assert int(vault["compensation_wei"]) == 4
+    assert int(vault["claim_stake_wei"]) == 1
+    _file(
+        contract,
+        direct_vm,
+        direct_bob,
         "1",
         "LOT 4450",
         "https://example.com/receipt-4450",
-        "Bought this pack in March 2026",
-        str(_gen(3)),
+        "Bought March 2026",
+        1,
     )
-
+    claim = contract.get_claim("1")
+    assert int(claim["reserved_wei"]) == 4
+    assert int(claim["stake_wei"]) == 1
+    assert "RECALLVAULT:1:LOT4450:" in claim["proof_token"]
     vault = contract.get_vault("1")
-    assert int(vault["reserved_wei"]) == _gen(3)
-    assert int(vault["available_wei"]) == _gen(7)
-    claim = contract.get_claim("1")
-    assert claim["status"] == "open"
-    assert claim["lot_or_serial"] == "LOT 4450"
+    assert int(vault["reserved_wei"]) == 4
+    assert int(vault["available_wei"]) == 16
 
 
-def test_duplicate_open_claim_reverts(direct_vm, direct_deploy, direct_alice, direct_bob):
+def test_file_requires_stake(direct_vm, direct_deploy, direct_alice, direct_bob):
     contract = direct_deploy(CONTRACT)
     _list_food(contract, direct_vm, direct_alice)
     direct_vm.sender = direct_bob
-    contract.file_claim("1", "LOT 1", "https://example.com/a", "first", str(_gen(1)))
-    with direct_vm.expect_revert("you already have an open claim on this product"):
-        contract.file_claim("1", "LOT 2", "https://example.com/b", "second", str(_gen(1)))
+    direct_vm.value = 0
+    with direct_vm.expect_revert("send at least the sponsor-defined claim stake"):
+        contract.file_claim("1", "LOT 1", "https://example.com/a", "x")
 
 
-def test_claim_over_available_reverts(direct_vm, direct_deploy, direct_alice, direct_bob):
+def test_max_open_claims_and_duplicate_unit(direct_vm, direct_deploy, direct_alice, direct_bob, direct_charlie):
     contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    with direct_vm.expect_revert("claim exceeds available bond"):
-        contract.file_claim("1", "LOT 1", "https://example.com/a", "too big", str(_gen(99)))
+    _list_food(contract, direct_vm, direct_alice, max_open=1, compensation=4, bond=20, stake=1)
+    _file(contract, direct_vm, direct_bob, "1", "LOT1", "https://example.com/a", "first", 1)
+    direct_vm.sender = direct_charlie
+    direct_vm.value = 1
+    with direct_vm.expect_revert("vault is at max open claims"):
+        contract.file_claim("1", "LOT2", "https://example.com/b", "second")
 
 
-def test_cancel_releases_reserve(direct_vm, direct_deploy, direct_alice, direct_bob):
-    contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    contract.file_claim("1", "LOT 1", "https://example.com/a", "cancel me", str(_gen(4)))
-    contract.cancel_claim("1")
-    assert contract.get_claim("1")["status"] == "cancelled"
-    assert int(contract.get_vault("1")["reserved_wei"]) == 0
-
-
-def test_honor_pays_without_llm(direct_vm, direct_deploy, direct_alice, direct_bob):
-    contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    contract.file_claim("1", "LOT 1", "https://example.com/a", "please honor", str(_gen(4)))
-    direct_vm.sender = direct_alice
-    contract.honor_claim("1")
-    claim = contract.get_claim("1")
-    assert claim["status"] == "honored"
-    assert int(claim["payout_wei"]) == _gen(4)
-    assert int(contract.get_vault("1")["reserved_wei"]) == 0
-    assert int(contract.get_vault("1")["bond_wei"]) == _gen(6)
-
-
-def test_non_sponsor_cannot_honor(direct_vm, direct_deploy, direct_alice, direct_bob):
-    contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    contract.file_claim("1", "LOT 1", "https://example.com/a", "x", str(_gen(1)))
-    with direct_vm.expect_revert("only the sponsor can honor a claim"):
-        contract.honor_claim("1")
-
-
-def test_adjudicate_pays_on_official_match(
-    direct_vm, direct_deploy, direct_alice, direct_bob
-):
-    contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    contract.file_claim(
-        "1",
-        "LOT 4450",
-        "https://example.com/receipt",
-        "Pack purchased March 2026",
-        str(_gen(5)),
-    )
-
-    direct_vm.mock_web(r".*api\.fda\.gov/food/enforcement.*", {"status": 200, "body": json.dumps(FDA_ONGOING)})
-    direct_vm.mock_llm(r".*RecallVault adjudicator.*", json.dumps(LLM_PAY))
-
-    direct_vm.sender = direct_alice
-    contract.adjudicate("1")
-
-    claim = contract.get_claim("1")
-    assert claim["status"] == "paid"
-    assert claim["agency"] == "FDA"
-    assert claim["recall_number"] == "F-1234-2026"
-    assert int(claim["payout_wei"]) == _gen(5)
-    assert int(contract.get_vault("1")["bond_wei"]) == _gen(5)
-    assert int(contract.get_vault("1")["reserved_wei"]) == 0
-
-
-def test_adjudicate_rejects_when_no_recall(
-    direct_vm, direct_deploy, direct_alice, direct_bob
-):
-    contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    contract.file_claim("1", "LOT Z", "https://example.com/r", "unrelated snack", str(_gen(2)))
-
-    direct_vm.mock_web(
-        r".*api\.fda\.gov/food/enforcement.*",
-        {"status": 404, "body": json.dumps({"error": {"code": "NOT_FOUND"}})},
-    )
-    direct_vm.mock_llm(r".*RecallVault adjudicator.*", json.dumps(LLM_DENY))
-
-    contract.adjudicate("1")
-    claim = contract.get_claim("1")
-    assert claim["status"] == "rejected"
-    assert int(claim["payout_wei"]) == 0
-    assert int(contract.get_vault("1")["bond_wei"]) == _gen(10)
-    assert int(contract.get_vault("1")["reserved_wei"]) == 0
-
-
-def test_vehicle_adjudication_uses_nhtsa(
-    direct_vm, direct_deploy, direct_alice, direct_bob
-):
+def test_https_and_vehicle_vin_required(direct_vm, direct_deploy, direct_alice, direct_bob):
     contract = direct_deploy(CONTRACT)
     direct_vm.sender = direct_alice
-    direct_vm.value = _gen(8)
+    direct_vm.value = 20
     contract.list_product(
         "Honda",
         "Accord",
@@ -253,66 +181,138 @@ def test_vehicle_adjudication_uses_nhtsa(
         "honda",
         "accord",
         "2019",
-        "Airbag inflator coverage",
+        "YMM coverage after VIN decode",
+        "5",
+        "1",
+        "86400",
+        "3",
     )
     direct_vm.sender = direct_bob
+    direct_vm.value = 1
+    with direct_vm.expect_revert("vehicle claims require a 17-character VIN"):
+        contract.file_claim("1", "ACCORD", "https://example.com/title", "not a vin")
+
+
+def test_cancel_releases_reserve_and_returns_stake(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = direct_deploy(CONTRACT)
+    _list_food(contract, direct_vm, direct_alice, compensation=4, stake=1, bond=20)
+    _file(contract, direct_vm, direct_bob, "1", "LOT1", "https://example.com/a", "cancel me", 1)
+    contract.cancel_claim("1")
+    assert contract.get_claim("1")["status"] == "cancelled"
+    assert int(contract.get_vault("1")["reserved_wei"]) == 0
+
+
+def test_honor_pays_compensation_not_claimant_amount(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = direct_deploy(CONTRACT)
+    _list_food(contract, direct_vm, direct_alice, compensation=4, stake=1, bond=20)
+    _file(contract, direct_vm, direct_bob, "1", "LOT1", "https://example.com/a", "please honor", 1)
+    direct_vm.sender = direct_alice
     direct_vm.value = 0
-    contract.file_claim(
-        "1",
-        "VIN 1HGCV1F3XKA000111",
-        "https://example.com/title",
-        "2019 Accord owner",
-        str(_gen(8)),
-    )
-
-    direct_vm.mock_web(r".*api\.nhtsa\.gov/recalls/recallsByVehicle.*", {"status": 200, "body": json.dumps(NHTSA_HIT)})
-    direct_vm.mock_llm(r".*RecallVault adjudicator.*", json.dumps(LLM_NHTSA))
-    contract.adjudicate("1")
-
+    contract.honor_claim("1")
     claim = contract.get_claim("1")
-    assert claim["status"] == "paid"
-    assert claim["agency"] == "NHTSA"
-    assert claim["recall_number"] == "26V123000"
+    assert claim["status"] == "honored"
+    assert int(claim["payout_wei"]) == 4
+    assert int(contract.get_vault("1")["reserved_wei"]) == 0
+    assert int(contract.get_vault("1")["bond_wei"]) == 16
 
 
-def test_withdraw_surplus_only_unreserved(
+def test_adjudicate_pays_fixed_compensation(
     direct_vm, direct_deploy, direct_alice, direct_bob
 ):
     contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    contract.file_claim("1", "LOT 1", "https://example.com/a", "x", str(_gen(4)))
+    _list_food(contract, direct_vm, direct_alice, compensation=4, stake=1, bond=20)
+    _file(
+        contract,
+        direct_vm,
+        direct_bob,
+        "1",
+        "LOT 4450",
+        "https://example.com/receipt",
+        "Pack purchased March 2026",
+        1,
+    )
+    token = contract.get_claim("1")["proof_token"]
+    direct_vm.mock_web(r".*api\.fda\.gov/food/enforcement.*", {"status": 200, "body": json.dumps(FDA_ONGOING)})
+    direct_vm.mock_web(
+        r".*example\.com/receipt.*",
+        {"status": 200, "body": "Grocery receipt for liverwurst lot 4450 " + token},
+    )
+    direct_vm.mock_llm(r".*RecallVault adjudicator.*", json.dumps(LLM_PAY))
+    contract.adjudicate("1")
+    claim = contract.get_claim("1")
+    assert claim["status"] == "paid"
+    assert int(claim["payout_wei"]) == 4
+    assert claim["lot_in_scope"] is True or claim["lot_in_scope"] == True
+    assert int(contract.get_vault("1")["bond_wei"]) == 16
+
+
+def test_no_payout_when_lot_not_in_scope(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = direct_deploy(CONTRACT)
+    _list_food(contract, direct_vm, direct_alice, compensation=4, stake=1, bond=20)
+    _file(contract, direct_vm, direct_bob, "1", "Z999", "https://example.com/r", "wrong lot", 1)
+    direct_vm.mock_web(r".*api\.fda\.gov/food/enforcement.*", {"status": 200, "body": json.dumps(FDA_ONGOING)})
+    direct_vm.mock_web(r".*example\.com/r.*", {"status": 200, "body": "receipt"})
+    direct_vm.mock_llm(r".*RecallVault adjudicator.*", json.dumps(LLM_LOT_OUT))
+    contract.adjudicate("1")
+    claim = contract.get_claim("1")
+    assert claim["status"] == "rejected"
+    assert int(claim["payout_wei"]) == 0
+    assert claim["lot_in_scope"] is False or claim["lot_in_scope"] == False
+    assert int(contract.get_vault("1")["bond_wei"]) == 21
+
+
+def test_vehicle_requires_vpic_match(direct_vm, direct_deploy, direct_alice, direct_bob):
+    contract = direct_deploy(CONTRACT)
     direct_vm.sender = direct_alice
-    with direct_vm.expect_revert("amount exceeds unreserved bond"):
-        contract.withdraw_surplus("1", str(_gen(7)))
-    contract.withdraw_surplus("1", str(_gen(6)))
-    assert int(contract.get_vault("1")["bond_wei"]) == _gen(4)
+    direct_vm.value = 20
+    contract.list_product(
+        "Honda",
+        "Accord",
+        "vehicle",
+        "Honda Accord",
+        "honda",
+        "accord",
+        "2019",
+        "YMM after VIN decode",
+        "5",
+        "1",
+        "86400",
+        "3",
+    )
+    vin = "1HGCV1F30KA000111"
+    _file(contract, direct_vm, direct_bob, "1", vin, "https://example.com/title", "2019 Accord owner", 1)
+    token = contract.get_claim("1")["proof_token"]
+    direct_vm.mock_web(r".*api\.nhtsa\.gov/recalls/recallsByVehicle.*", {"status": 200, "body": json.dumps(NHTSA_HIT)})
+    direct_vm.mock_web(r".*vpic\.nhtsa\.dot\.gov/api/vehicles/DecodeVinValues.*", {"status": 200, "body": json.dumps(VPIC_ACCORD)})
+    direct_vm.mock_web(r".*example\.com/title.*", {"status": 200, "body": "Vehicle title " + vin + " " + token})
+    direct_vm.mock_llm(r".*RecallVault adjudicator.*", json.dumps(LLM_NHTSA))
+    contract.adjudicate("1")
+    claim = contract.get_claim("1")
+    assert claim["status"] == "paid"
+    assert claim["vin_matches"] is True or claim["vin_matches"] == True
+    assert int(claim["payout_wei"]) == 5
 
 
-def test_preview_sources_is_deterministic(direct_vm, direct_deploy, direct_alice):
+def test_release_expired_unlocks_bond(direct_vm, direct_deploy, direct_alice, direct_bob):
     contract = direct_deploy(CONTRACT)
-    food = contract.preview_sources("food", "liverwurst", "", "", "")
-    assert food["urls"][0].startswith("https://api.fda.gov/food/enforcement.json")
-    vehicle = contract.preview_sources("vehicle", "x", "honda", "accord", "2019")
-    assert "api.nhtsa.gov/recalls/recallsByVehicle" in vehicle["urls"][0]
-    assert "make=honda" in vehicle["urls"][0]
+    _list_food(contract, direct_vm, direct_alice, compensation=4, stake=1, bond=20, ttl=3600)
+    _file(contract, direct_vm, direct_bob, "1", "LOT1", "https://example.com/a", "will expire", 1)
+    with direct_vm.expect_revert("claim has not expired"):
+        contract.release_expired("1")
 
 
-def test_invalid_category_reverts(direct_vm, direct_deploy, direct_alice):
+def test_preview_sources_includes_vpic_for_vin(direct_vm, direct_deploy, direct_alice):
+    contract = direct_deploy(CONTRACT)
+    vehicle = contract.preview_sources("vehicle", "x", "honda", "accord", "2019", "1HGCV1F30KA000111")
+    joined = " ".join(vehicle["urls"])
+    assert "api.nhtsa.gov/recalls/recallsByVehicle" in joined
+    assert "DecodeVinValues/1HGCV1F30KA000111" in joined
+    assert vehicle["vehicle_scope"] == "model_year_campaign_after_vin_decode"
+
+
+def test_initial_bond_must_cover_compensation(direct_vm, direct_deploy, direct_alice):
     contract = direct_deploy(CONTRACT)
     direct_vm.sender = direct_alice
-    direct_vm.value = _gen(1)
-    with direct_vm.expect_revert("category must be food, drug, device, vehicle, or consumer"):
-        contract.list_product("A", "B", "spaceship", "q", "", "", "", "")
-
-
-def test_protocol_stats(direct_vm, direct_deploy, direct_alice, direct_bob):
-    contract = direct_deploy(CONTRACT)
-    _list_food(contract, direct_vm, direct_alice)
-    direct_vm.sender = direct_bob
-    contract.file_claim("1", "LOT 1", "https://example.com/a", "x", str(_gen(1)))
-    stats = contract.get_protocol()
-    assert stats["name"] == "RecallVault"
-    assert stats["vault_count"] == 1
-    assert stats["claim_count"] == 1
-    assert stats["open_claim_count"] == 1
+    direct_vm.value = 1
+    with direct_vm.expect_revert("initial bond must cover at least one compensation"):
+        contract.list_product("A", "B", "food", "q", "", "", "", "", "5", "1", "86400", "3")

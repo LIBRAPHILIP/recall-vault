@@ -11,6 +11,7 @@ import {
   readClaims,
   readClaimsForProduct,
   readProtocol,
+  readProofToken,
   readSources,
   readVault,
   readVaults,
@@ -113,13 +114,18 @@ export function App() {
     setAccount(addr);
   }
 
-  async function runWrite(functionName: string, args: Array<string | number | bigint | boolean>, value = 0n) {
+  async function runWrite(
+    functionName: string,
+    args: Array<string | number | bigint | boolean>,
+    value = 0n,
+    payout = false
+  ) {
     if (!writeClient) {
       setPicker(true);
       throw new Error("Connect MetaMask or OKX Wallet first");
     }
     setError("");
-    const snap = await sendAndTrack(writeClient, readClient, { functionName, args, value }, setTx);
+    const snap = await sendAndTrack(writeClient, readClient, { functionName, args, value, payout }, setTx);
     await refresh();
     return snap;
   }
@@ -213,6 +219,10 @@ export function App() {
                 payload.vehicle_model,
                 payload.vehicle_year,
                 payload.notes,
+                payload.compensation_wei,
+                payload.claim_stake_wei,
+                payload.claim_ttl_sec,
+                payload.max_open_claims,
               ],
               value
             );
@@ -463,6 +473,9 @@ function VaultCard({ vault, onClick }: { vault: Vault; onClick: () => void }) {
         Available {formatGen(vault.available_wei)} GEN · reserved {formatGen(vault.reserved_wei)}
       </div>
       <div className="bond">{formatGen(vault.bond_wei)} GEN bonded</div>
+      {vault.compensation_wei ? (
+        <div className="meta">Fixed payout {formatGen(vault.compensation_wei)} GEN · stake {formatGen(vault.claim_stake_wei)}</div>
+      ) : null}
     </article>
   );
 }
@@ -510,6 +523,10 @@ function NewVault({
       vehicle_model: string;
       vehicle_year: string;
       notes: string;
+      compensation_wei: string;
+      claim_stake_wei: string;
+      claim_ttl_sec: string;
+      max_open_claims: string;
     },
     value: bigint
   ) => Promise<void>;
@@ -522,7 +539,11 @@ function NewVault({
   const [model, setModel] = useState("");
   const [year, setYear] = useState("");
   const [notes, setNotes] = useState("");
-  const [bond, setBond] = useState("5");
+  const [bond, setBond] = useState("20");
+  const [compensation, setCompensation] = useState("4");
+  const [stake, setStake] = useState("1");
+  const [ttlHours, setTtlHours] = useState("72");
+  const [maxOpen, setMaxOpen] = useState("3");
   const [busy, setBusy] = useState(false);
   const [hits, setHits] = useState<OfficialHit[]>([]);
   const [scanErr, setScanErr] = useState("");
@@ -556,8 +577,9 @@ function NewVault({
       <div className="panel">
         <h3>List a product and post a bond</h3>
         <p className="hint">
-          This is a payable contract call. The GEN you send becomes the initial recall bond. Anyone can add
-          more later.
+          You define a <strong>fixed compensation</strong> per approved claim. The LLM only decides
+          eligibility. Claimants cannot choose how much to draw. Vehicle vaults pay for{" "}
+          <strong>model-year campaign coverage after VIN decode</strong>, not an unrepaired-VIN manufacturer list.
         </p>
         <form
           className="form mt"
@@ -579,6 +601,10 @@ function NewVault({
                   vehicle_model: model,
                   vehicle_year: year,
                   notes,
+                  compensation_wei: parseWei(compensation).toString(),
+                  claim_stake_wei: parseWei(stake).toString(),
+                  claim_ttl_sec: String(Math.max(1, Number(ttlHours) || 72) * 3600),
+                  max_open_claims: maxOpen,
                 },
                 parseWei(bond)
               );
@@ -601,6 +627,24 @@ function NewVault({
               <input value={bond} onChange={(e) => setBond(e.target.value)} />
             </label>
           </div>
+          <div className="form-row three">
+            <label>
+              Fixed payout / claim
+              <input value={compensation} onChange={(e) => setCompensation(e.target.value)} />
+            </label>
+            <label>
+              Claim stake
+              <input value={stake} onChange={(e) => setStake(e.target.value)} />
+            </label>
+            <label>
+              Claim TTL (hours)
+              <input value={ttlHours} onChange={(e) => setTtlHours(e.target.value)} />
+            </label>
+          </div>
+          <label>
+            Max open claims
+            <input value={maxOpen} onChange={(e) => setMaxOpen(e.target.value)} />
+          </label>
           <div className="form-row">
             <label>
               Brand / firm
@@ -699,14 +743,19 @@ function VaultDetail({
   readClient: ReturnType<typeof createReadClient>;
   onNeedWallet: () => void;
   onClaim: (id: string) => void;
-  onWrite: (fn: string, args: Array<string | number | bigint | boolean>, value?: bigint) => Promise<ReceiptSnapshot>;
+  onWrite: (
+    fn: string,
+    args: Array<string | number | bigint | boolean>,
+    value?: bigint,
+    payout?: boolean
+  ) => Promise<ReceiptSnapshot>;
 }) {
   const [vault, setVault] = useState<Vault | null>(null);
   const [claims, setClaims] = useState<Claim[]>([]);
   const [lot, setLot] = useState("");
   const [proof, setProof] = useState("https://");
   const [statement, setStatement] = useState("");
-  const [amount, setAmount] = useState("1");
+  const [token, setToken] = useState("");
   const [fund, setFund] = useState("1");
   const [withdraw, setWithdraw] = useState("1");
   const [busy, setBusy] = useState("");
@@ -766,51 +815,74 @@ function VaultDetail({
           <strong>{formatGen(vault.reserved_wei)}</strong>
         </div>
         <div className="stat">
-          <span>Query</span>
-          <strong style={{ fontSize: 13 }}>{vault.search_query}</strong>
+          <span>Fixed payout</span>
+          <strong>{formatGen(vault.compensation_wei)}</strong>
         </div>
         <div className="stat">
-          <span>Vehicle</span>
+          <span>Claim stake / TTL</span>
           <strong style={{ fontSize: 13 }}>
-            {vault.vehicle_make ? `${vault.vehicle_make} ${vault.vehicle_model} ${vault.vehicle_year}` : "—"}
+            {formatGen(vault.claim_stake_wei)} GEN · {Math.round(Number(vault.claim_ttl_sec || 0) / 3600)}h · max {vault.max_open_claims || "—"} open
           </strong>
         </div>
       </div>
+      {vault.category === "vehicle" ? (
+        <div className="notice mt">
+          Vehicle vaults pay for <strong>model-year campaign coverage</strong> after NHTSA vPIC decodes the VIN
+          to this make/model/year. That is not NHTSA’s unrepaired-VIN owner list.
+        </div>
+      ) : null}
 
       <div className="grid-2">
         <div className="panel">
           <h3>File a claim</h3>
           <p className="hint">
-            Filing reserves GEN from the bond. Adjudication later fetches official recall records and either
-            pays you or releases the reserve.
+            Public-commit bearer entitlement: publish the token below on an https purchase/ownership page,
+            then file. This reserves the sponsor’s fixed payout ({formatGen(vault.compensation_wei)} GEN) and
+            requires a {formatGen(vault.claim_stake_wei)} GEN stake. Failed or expired claims slash the stake
+            into the bond and release the reserve.
           </p>
           <form
             className="form mt"
             onSubmit={(e) => {
               e.preventDefault();
               void wrap("file", () =>
-                onWrite("file_claim", [vault.id, lot, proof, statement, parseWei(amount).toString()])
+                onWrite("file_claim", [vault.id, lot, proof, statement], BigInt(vault.claim_stake_wei || "0"))
               );
             }}
           >
             <label>
-              Lot / serial / VIN
+              {vault.category === "vehicle" ? "17-character VIN" : "Lot / serial"}
               <input value={lot} onChange={(e) => setLot(e.target.value)} required />
             </label>
+            <button
+              className="btn"
+              type="button"
+              onClick={() => {
+                if (!account) {
+                  onNeedWallet();
+                  return;
+                }
+                void readProofToken(vault.id, lot, account, readClient).then(setToken);
+              }}
+            >
+              Show commit token
+            </button>
+            {token ? (
+              <div className="notice">
+                Publish this exact line on the proof page:
+                <div className="mono small mt">{token}</div>
+              </div>
+            ) : null}
             <label>
-              Public proof URL
+              Public https proof URL
               <input value={proof} onChange={(e) => setProof(e.target.value)} required />
             </label>
             <label>
               Statement
               <textarea value={statement} onChange={(e) => setStatement(e.target.value)} placeholder="Where and when you obtained the product" />
             </label>
-            <label>
-              Claim amount (GEN)
-              <input value={amount} onChange={(e) => setAmount(e.target.value)} />
-            </label>
             <button className="btn-primary" disabled={!!busy}>
-              {busy === "file" ? "Filing…" : "File claim"}
+              {busy === "file" ? "Filing…" : `File claim (stake ${formatGen(vault.claim_stake_wei)} GEN)`}
             </button>
           </form>
         </div>
@@ -914,7 +986,12 @@ function ClaimDetail({
   readClient: ReturnType<typeof createReadClient>;
   onNeedWallet: () => void;
   onVault: (id: string) => void;
-  onWrite: (fn: string, args: Array<string | number | bigint | boolean>, value?: bigint) => Promise<ReceiptSnapshot>;
+  onWrite: (
+    fn: string,
+    args: Array<string | number | bigint | boolean>,
+    value?: bigint,
+    payout?: boolean
+  ) => Promise<ReceiptSnapshot>;
 }) {
   const [claim, setClaim] = useState<Claim | null>(null);
   const [busy, setBusy] = useState("");
@@ -932,14 +1009,14 @@ function ClaimDetail({
   const isClaimant = sameAddr(account, claim.claimant);
   const isSponsor = vault ? sameAddr(account, vault.sponsor) : false;
 
-  async function wrap(label: string, fn: string) {
+  async function wrap(label: string, fn: string, payout = false) {
     if (!account) {
       onNeedWallet();
       return;
     }
     setBusy(label);
     try {
-      await onWrite(fn, [claim!.id]);
+      await onWrite(fn, [claim!.id], 0n, payout);
       await load();
     } finally {
       setBusy("");
@@ -986,6 +1063,21 @@ function ClaimDetail({
               </td>
             </tr>
             <tr>
+              <td className="muted">Commit token</td>
+              <td className="mono small">{claim.proof_token || "—"}</td>
+            </tr>
+            <tr>
+              <td className="muted">Entitled / lot in scope</td>
+              <td>
+                {String(claim.entitled)} / {String(claim.lot_in_scope)}
+                {claim.vin_matches ? " · VIN matches listing" : ""}
+              </td>
+            </tr>
+            <tr>
+              <td className="muted">Expires</td>
+              <td className="mono">{claim.expires_at ? new Date(Number(claim.expires_at) * 1000).toISOString() : "—"}</td>
+            </tr>
+            <tr>
               <td className="muted">Statement</td>
               <td>{claim.statement || "—"}</td>
             </tr>
@@ -1001,12 +1093,12 @@ function ClaimDetail({
         </table>
         {claim.status === "open" ? (
           <div className="split mt">
-            <button className="btn-primary" disabled={!!busy} onClick={() => void wrap("adj", "adjudicate")}>
+            <button className="btn-primary" disabled={!!busy} onClick={() => void wrap("adj", "adjudicate", true)}>
               {busy === "adj" ? "Adjudicating against official sources…" : "Adjudicate from official data"}
             </button>
             {isSponsor ? (
-              <button className="btn-ok" disabled={!!busy} onClick={() => void wrap("honor", "honor_claim")}>
-                Honor & pay
+              <button className="btn-ok" disabled={!!busy} onClick={() => void wrap("honor", "honor_claim", true)}>
+                Honor fixed payout
               </button>
             ) : null}
             {isClaimant ? (
@@ -1014,6 +1106,9 @@ function ClaimDetail({
                 Cancel claim
               </button>
             ) : null}
+            <button className="btn" disabled={!!busy} onClick={() => void wrap("exp", "release_expired")}>
+              Release if expired
+            </button>
           </div>
         ) : null}
         <p className="hint mt">
@@ -1107,11 +1202,13 @@ function How() {
           </a>
           .
         </p>
-        <h3 className="mt">Why this is not the football-bets boilerplate</h3>
+        <h3 className="mt">Steward model</h3>
         <p className="hint">
-          Escrow + reserve accounting, payable bonds, official government APIs, structured payout buckets, and
-          an honor/cancel path. A manufacturer can keep a standing bond per SKU; insurers can top it up; new
-          official recalls keep arriving at the same APIs with no redeploy.
+          Entitlement is a public-commit bearer claim: the proof page must contain{" "}
+          <span className="mono">RECALLVAULT:&lt;vault&gt;:&lt;unit&gt;:&lt;claimant&gt;</span> and look like a
+          purchase/ownership record. Payout is the sponsor’s fixed compensation. Open claims expire; anyone
+          can release them. Vehicle payouts are model-year campaign coverage after vPIC VIN decode. The UI
+          marks a payout irreversible only after FINALIZED + FINISHED_WITH_RETURN.
         </p>
       </div>
     </section>

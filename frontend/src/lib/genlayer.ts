@@ -5,7 +5,7 @@ import { asBool, asStr } from "./format";
 
 export const NETWORK_NAME = (import.meta.env.VITE_NETWORK || "studionet") as NetworkName;
 export const CONTRACT_ADDRESS = (import.meta.env.VITE_CONTRACT_ADDRESS ||
-  "0x5372693bd427e52A0677c771D57aeCC027ef32b5") as `0x${string}`;
+  "0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4") as `0x${string}`;
 
 export type NetworkName = "localnet" | "studionet" | "testnetAsimov" | "testnetBradbury";
 
@@ -68,8 +68,14 @@ export type Vault = {
   bond_wei: string;
   reserved_wei: string;
   available_wei: string;
+  compensation_wei: string;
+  claim_stake_wei: string;
+  claim_ttl_sec: string;
+  max_open_claims: string;
   created_at: string;
   active: boolean;
+  entitlement_model: string;
+  vehicle_scope: string;
 };
 
 export type Claim = {
@@ -78,8 +84,12 @@ export type Claim = {
   claimant: string;
   lot_or_serial: string;
   proof_url: string;
+  proof_token: string;
   statement: string;
   amount_wei: string;
+  reserved_wei: string;
+  stake_wei: string;
+  expires_at: string;
   status: string;
   filed_at: string;
   resolved_at: string;
@@ -91,6 +101,9 @@ export type Claim = {
   classification: string;
   reasoning: string;
   payout_wei: string;
+  entitled: boolean;
+  lot_in_scope: boolean;
+  vin_matches: boolean;
 };
 
 export type Protocol = {
@@ -107,6 +120,7 @@ export type ReceiptSnapshot = {
   status: string;
   execution?: string;
   error?: string;
+  irreversible?: boolean;
 };
 
 function chainOf(name: NetworkName) {
@@ -144,8 +158,14 @@ function mapVault(raw: Record<string, unknown>): Vault {
     bond_wei: asStr(raw.bond_wei),
     reserved_wei: asStr(raw.reserved_wei),
     available_wei: asStr(raw.available_wei),
+    compensation_wei: asStr(raw.compensation_wei),
+    claim_stake_wei: asStr(raw.claim_stake_wei),
+    claim_ttl_sec: asStr(raw.claim_ttl_sec),
+    max_open_claims: asStr(raw.max_open_claims),
     created_at: asStr(raw.created_at),
     active: asBool(raw.active),
+    entitlement_model: asStr(raw.entitlement_model) || "public_commit_bearer",
+    vehicle_scope: asStr(raw.vehicle_scope),
   };
 }
 
@@ -156,8 +176,12 @@ function mapClaim(raw: Record<string, unknown>): Claim {
     claimant: asStr(raw.claimant),
     lot_or_serial: asStr(raw.lot_or_serial),
     proof_url: asStr(raw.proof_url),
+    proof_token: asStr(raw.proof_token),
     statement: asStr(raw.statement),
-    amount_wei: asStr(raw.amount_wei),
+    amount_wei: asStr(raw.amount_wei || raw.reserved_wei),
+    reserved_wei: asStr(raw.reserved_wei || raw.amount_wei),
+    stake_wei: asStr(raw.stake_wei),
+    expires_at: asStr(raw.expires_at),
     status: asStr(raw.status),
     filed_at: asStr(raw.filed_at),
     resolved_at: asStr(raw.resolved_at),
@@ -169,6 +193,9 @@ function mapClaim(raw: Record<string, unknown>): Claim {
     classification: asStr(raw.classification),
     reasoning: asStr(raw.reasoning),
     payout_wei: asStr(raw.payout_wei),
+    entitled: asBool(raw.entitled),
+    lot_in_scope: asBool(raw.lot_in_scope),
+    vin_matches: asBool(raw.vin_matches),
   };
 }
 
@@ -244,18 +271,33 @@ export async function readClaim(id: string, client = createReadClient()): Promis
   return mapClaim(raw);
 }
 
+export async function readProofToken(
+  productId: string,
+  unit: string,
+  claimant: string,
+  client = createReadClient()
+): Promise<string> {
+  const raw = (await client.readContract({
+    address: CONTRACT_ADDRESS,
+    functionName: "preview_proof_token",
+    args: [productId, unit, claimant],
+  })) as { token?: unknown };
+  return asStr(raw?.token);
+}
+
 export async function readSources(
   category: string,
   searchQuery: string,
   make: string,
   model: string,
   year: string,
+  vin = "",
   client = createReadClient()
 ): Promise<string[]> {
   const raw = (await client.readContract({
     address: CONTRACT_ADDRESS,
     functionName: "preview_sources",
-    args: [category, searchQuery, make, model, year],
+    args: [category, searchQuery, make, model, year, vin],
   })) as { urls?: unknown };
   if (Array.isArray(raw?.urls)) return raw.urls.map(asStr);
   return [];
@@ -265,6 +307,7 @@ export type WriteParams = {
   functionName: string;
   args: Array<string | number | bigint | boolean>;
   value?: bigint;
+  payout?: boolean;
 };
 
 function pickStatus(tx: Record<string, unknown>): string {
@@ -353,23 +396,41 @@ export async function sendAndTrack(
 
     const exec = asStr(accepted.txExecutionResultName || accepted.execution_result || accepted.resultName);
     const statusName = pickStatus(accepted) || snap.status;
+    const finishedOk = exec === ExecutionResult.FINISHED_WITH_RETURN;
     const failed =
       exec === ExecutionResult.FINISHED_WITH_ERROR ||
       exec === "FAILURE" ||
       statusName === "UNDETERMINED" ||
       statusName === "CANCELED" ||
       statusName === "VALIDATORS_TIMEOUT" ||
-      statusName === "LEADER_TIMEOUT";
+      statusName === "LEADER_TIMEOUT" ||
+      (params.payout && exec !== "" && !finishedOk && exec !== "MAJORITY_AGREE");
     const leader = accepted.consensus_data as { leader_receipt?: Array<{ error?: string }> } | undefined;
     const leaderError = leader?.leader_receipt?.[0]?.error || "";
+    const irreversible = !failed && statusName === "FINALIZED" && (finishedOk || exec === "" || exec === "MAJORITY_AGREE");
+
+    if (params.payout && !finishedOk && exec && exec !== "MAJORITY_AGREE") {
+      snap = {
+        hash,
+        status: "FAILED",
+        execution: exec,
+        error: `Payout write did not finish with FINISHED_WITH_RETURN (got ${exec || "unknown"}).`,
+        irreversible: false,
+      };
+      onUpdate(snap);
+      return snap;
+    }
 
     snap = {
       hash,
       status: failed ? statusName || "FAILED" : statusName === "FINALIZED" ? "FINALIZED" : "ACCEPTED",
       execution: exec,
+      irreversible,
       error: failed
         ? asStr(leaderError || accepted.txExecutionError || accepted.error || "Execution did not finish cleanly")
-        : "",
+        : params.payout && !irreversible
+          ? "Consensus accepted this write. The UI will not mark the payout irreversible until FINALIZED and FINISHED_WITH_RETURN."
+          : "",
     };
     onUpdate(snap);
     return snap;

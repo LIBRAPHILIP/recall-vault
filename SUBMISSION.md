@@ -2,8 +2,8 @@
 
 **Live app:** https://recallvault-app.vercel.app  
 **Source:** https://github.com/LIBRAPHILIP/recall-vault  
-**Intelligent Contract (Studionet):** [`0x5372693bd427e52A0677c771D57aeCC027ef32b5`](https://explorer-studio.genlayer.com/address/0x5372693bd427e52A0677c771D57aeCC027ef32b5)  
-**Deploy tx:** [`0x5ef2155cb4506384e80db98143cd53f2299172afddf7d152e059b8e5ab8e0e14`](https://explorer-studio.genlayer.com/tx/0x5ef2155cb4506384e80db98143cd53f2299172afddf7d152e059b8e5ab8e0e14)
+**Intelligent Contract (Studionet):** [`0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4`](https://explorer-studio.genlayer.com/address/0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4)  
+**Deploy tx:** [`0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9`](https://explorer-studio.genlayer.com/tx/0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9)
 
 This is a complete GenLayer app: one real Intelligent Contract, a wallet frontend that calls it, and a workflow where GenLayer owns the decision that moves money.
 
@@ -85,6 +85,18 @@ Not a football score market. The contract has payable bonds, reserved vs availab
 Continued use: standing manufacturer bonds per SKU, insurer top-ups, advocacy-funded vaults. New official recalls keep arriving at the same government APIs — no redeploy.
 
 ---
+
+## Steward revisions (entitlement, payout authority, liveness, VIN, finality)
+
+1. **Entitlement, not only recall scope.** Model: `public_commit_bearer`. Filing stores a commit token `RECALLVAULT:<product_id>:<unit>:<claimant>`. Adjudication **fetches the https proof URL**, requires the token on the page, and requires the page to be a purchase/ownership record (`entitled_document`). Payout requires `entitled && recall_found && in_scope && lot_in_scope`. A GitHub README with no receipt fails even if the token is pasted.
+
+2. **Sponsor-defined payout.** Each vault has `compensation_wei`. Claimants no longer choose `amount_wei`. The LLM returns eligibility booleans only. Paid amount is the vault compensation (capped by remaining bond).
+
+3. **Anti-griefing / liveness.** Filing requires `claim_stake_wei`, reserves only `compensation_wei`, and is capped by `max_open_claims`. Claims expire (`claim_ttl_sec`). Anyone may `release_expired` to unreserve and slash the stake into the bond. Duplicate unit IDs cannot sit open or paid twice.
+
+4. **Vehicle evidence.** NHTSA does not expose a stable public unrepaired-VIN API. Vehicle vaults are explicitly **model-year campaign coverage after VIN decode**: a 17-character VIN is required; vPIC `DecodeVinValues` must match the listing YMM; `recallsByVehicle` establishes the campaign. UI and `vehicle_scope` say this is not manufacturer VIN-list eligibility.
+
+5. **Settlement hardness.** Contract: no adjudicated payout if `lot_in_scope` is false (also requires entitled + recall_found + in_scope). Frontend: payout writes (`adjudicate`, `honor_claim`) are marked irreversible only when status is FINALIZED and execution is FINISHED_WITH_RETURN.
 
 ## What to review in the code
 

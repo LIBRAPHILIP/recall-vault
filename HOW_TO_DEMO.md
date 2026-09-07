@@ -1,7 +1,9 @@
 # Live demo script (5–7 minutes)
 
 Live: https://recallvault-app.vercel.app  
-Contract: `0x5372693bd427e52A0677c771D57aeCC027ef32b5` on Studionet.
+Contract: `0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4` on Studionet.
+
+Publish `RECALLVAULT:<vault>:<unit>:<yourAddress>` on an https receipt/title page before filing. Payout is the vault’s fixed compensation. Vehicle claims need a 17-character VIN (model-year coverage after vPIC decode).
 
 ## Setup (once)
 
@@ -13,8 +15,8 @@ Contract: `0x5372693bd427e52A0677c771D57aeCC027ef32b5` on Studionet.
 
 1. **Open the Brief.** One sentence: *recalls are public, refunds are not.* Point at FDA / NHTSA / CPSC.
 2. **Connect wallet.** Confirm the network pill says Studionet. The footer shows the live contract.
-3. **Post a bond.** Scan official databases, pick a real FDA food recall, lock 2–5 GEN. Confirm the wallet popup. Watch the lifecycle strip — this is `writeContract`, not a mock.
-4. **Open the vault.** File a claim with a lot that matches the recall’s code info, any public `https://` URL, and 1 GEN.
+3. **Post a bond.** Set a fixed payout (e.g. 4 GEN), a claim stake, and TTL. Scan official databases, pick a real FDA food recall, lock a bond that covers at least one payout.
+4. **Open the vault.** Show the commit token, publish it on an https receipt page, then file. You do not choose the payout amount.
 5. **Adjudicate.** The contract — not the UI — fetches openFDA. Validators will disagree if they cannot reproduce the ruling.
 6. **Show the ruling.** Agency, recall number, reasoning, payout (`paid`) or a clean `rejected` if the product was nonsense.
 7. **Optional:** fund the same bond from a second wallet (insurer path). Honor a claim as sponsor without LLM.
