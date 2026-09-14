@@ -394,7 +394,11 @@ export async function sendAndTrack(
       /* Studionet often settles at ACCEPTED; keep going. */
     }
 
-    const exec = asStr(accepted.txExecutionResultName || accepted.execution_result || accepted.resultName);
+    const leader = accepted.consensus_data as {
+      leader_receipt?: Array<{ error?: string; execution_result?: string }>;
+    } | undefined;
+    const leaderExec = asStr(leader?.leader_receipt?.[0]?.execution_result);
+    const exec = asStr(accepted.txExecutionResultName || accepted.execution_result || leaderExec);
     const statusName = pickStatus(accepted) || snap.status;
     const finishedOk = exec === ExecutionResult.FINISHED_WITH_RETURN;
     const failed =
@@ -403,23 +407,9 @@ export async function sendAndTrack(
       statusName === "UNDETERMINED" ||
       statusName === "CANCELED" ||
       statusName === "VALIDATORS_TIMEOUT" ||
-      statusName === "LEADER_TIMEOUT" ||
-      (params.payout && exec !== "" && !finishedOk && exec !== "MAJORITY_AGREE");
-    const leader = accepted.consensus_data as { leader_receipt?: Array<{ error?: string }> } | undefined;
+      statusName === "LEADER_TIMEOUT";
     const leaderError = leader?.leader_receipt?.[0]?.error || "";
-    const irreversible = !failed && statusName === "FINALIZED" && (finishedOk || exec === "" || exec === "MAJORITY_AGREE");
-
-    if (params.payout && !finishedOk && exec && exec !== "MAJORITY_AGREE") {
-      snap = {
-        hash,
-        status: "FAILED",
-        execution: exec,
-        error: `Payout write did not finish with FINISHED_WITH_RETURN (got ${exec || "unknown"}).`,
-        irreversible: false,
-      };
-      onUpdate(snap);
-      return snap;
-    }
+    const irreversible = Boolean(params.payout) && statusName === "FINALIZED" && finishedOk;
 
     snap = {
       hash,
@@ -429,7 +419,7 @@ export async function sendAndTrack(
       error: failed
         ? asStr(leaderError || accepted.txExecutionError || accepted.error || "Execution did not finish cleanly")
         : params.payout && !irreversible
-          ? "Consensus accepted this write. The UI will not mark the payout irreversible until FINALIZED and FINISHED_WITH_RETURN."
+          ? `Payout is not irreversible yet. Need FINALIZED and FINISHED_WITH_RETURN (status ${statusName || "unknown"}, execution ${exec || "missing"}). MAJORITY_AGREE or a missing execution result is not enough.`
           : "",
     };
     onUpdate(snap);

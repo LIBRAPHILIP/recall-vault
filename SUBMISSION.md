@@ -2,8 +2,11 @@
 
 **Live app:** https://recallvault-app.vercel.app  
 **Source:** https://github.com/LIBRAPHILIP/recall-vault  
-**Intelligent Contract (Studionet):** [`0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4`](https://explorer-studio.genlayer.com/address/0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4)  
-**Deploy tx:** [`0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9`](https://explorer-studio.genlayer.com/tx/0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9)
+**Explorer evidence (current Studionet contract):** https://explorer-studio.genlayer.com/address/0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4  
+**Intelligent Contract:** `0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4`  
+**Deploy tx:** https://explorer-studio.genlayer.com/tx/0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9  
+
+Retired first deploy (do not use): `0x5372693bd427e52A0677c771D57aeCC027ef32b5`
 
 This is a complete GenLayer app: one real Intelligent Contract, a wallet frontend that calls it, and a workflow where GenLayer owns the decision that moves money.
 
@@ -96,7 +99,7 @@ Continued use: standing manufacturer bonds per SKU, insurer top-ups, advocacy-fu
 
 4. **Vehicle evidence.** NHTSA does not expose a stable public unrepaired-VIN API. Vehicle vaults are explicitly **model-year campaign coverage after VIN decode**: a 17-character VIN is required; vPIC `DecodeVinValues` must match the listing YMM; `recallsByVehicle` establishes the campaign. UI and `vehicle_scope` say this is not manufacturer VIN-list eligibility.
 
-5. **Settlement hardness.** Contract: no adjudicated payout if `lot_in_scope` is false (also requires entitled + recall_found + in_scope). Frontend: payout writes (`adjudicate`, `honor_claim`) are marked irreversible only when status is FINALIZED and execution is FINISHED_WITH_RETURN.
+5. **Settlement hardness.** Contract: no adjudicated payout if `lot_in_scope` is false (also requires entitled + recall_found + in_scope). Frontend payout writes (`adjudicate`, `honor_claim`) are marked irreversible **only** when status is `FINALIZED` **and** `txExecutionResultName` / `execution_result` is exactly `FINISHED_WITH_RETURN`. A missing execution result or consensus `MAJORITY_AGREE` is not irreversible success.
 
 ## What to review in the code
 
