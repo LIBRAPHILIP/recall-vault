@@ -1,9 +1,9 @@
 # Live demo script (5–7 minutes)
 
 Live: https://recallvault-app.vercel.app  
-Contract: `0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4` on Studionet.
+Contract: `0x689dC76bc82cc94738EE139d917F676D0C435490` on Studionet.
 
-Publish `RECALLVAULT:<vault>:<unit>:<yourAddress>` on an https receipt/title page before filing. Payout is the vault’s fixed compensation. Vehicle claims need a 17-character VIN (model-year coverage after vPIC decode).
+Publish `RECALLVAULT:<vault>:<unit>:<yourAddress>` on an https page before filing. That is **self-published bearer evidence**, not verified ownership. Payout is the vault’s fixed compensation. Cancel takes a stake penalty and cooldown. `honor_claim` is sponsor settlement, not a consensus eligibility finding. Vehicle claims need a 17-character VIN (model-year coverage after vPIC decode).
 
 ## Setup (once)
 

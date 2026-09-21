@@ -1,10 +1,10 @@
 {
   "contract": "RecallVault",
-  "address": "0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4",
+  "address": "0x689dC76bc82cc94738EE139d917F676D0C435490",
   "chainId": 61999,
   "network": "studionet",
-  "deployTx": "0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9",
-  "deployedAt": "2026-09-07T01:13:33.909Z",
-  "deployer": "0x3278cC4e4a94b3f152C60e3DCB83bd834bEA2FEB",
-  "entitlement_model": "public_commit_bearer"
+  "deployTx": "0x752e76c165a13fcaf3067326145438aeef875f93832984c9828c5de6396409a5",
+  "deployedAt": "2026-09-21T00:01:50.667Z",
+  "deployer": "0x4ADc21209bea41e478132611E4ac9CCd3642a6f4",
+  "entitlement_model": "self_published_bearer_evidence"
 }

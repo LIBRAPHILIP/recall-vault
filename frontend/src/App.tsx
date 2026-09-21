@@ -837,9 +837,11 @@ function VaultDetail({
           <h3>File a claim</h3>
           <p className="hint">
             Public-commit bearer entitlement: publish the token below on an https purchase/ownership page,
-            then file. This reserves the sponsor’s fixed payout ({formatGen(vault.compensation_wei)} GEN) and
-            requires a {formatGen(vault.claim_stake_wei)} GEN stake. Failed or expired claims slash the stake
-            into the bond and release the reserve.
+            then file. The token is <strong>self-published bearer evidence</strong>, not verified ownership
+            of a receipt. Official recall scope is judged from government records only — the proof page is
+            not sent to that LLM. Filing reserves {formatGen(vault.compensation_wei)} GEN and requires a{" "}
+            {formatGen(vault.claim_stake_wei)} GEN stake. Cancel slashes a penalty into the bond and starts a
+            refile cooldown.
           </p>
           <form
             className="form mt"
@@ -1067,10 +1069,15 @@ function ClaimDetail({
               <td className="mono small">{claim.proof_token || "—"}</td>
             </tr>
             <tr>
-              <td className="muted">Entitled / lot in scope</td>
+              <td className="muted">Settlement basis</td>
+              <td className="mono">{claim.settlement_basis || (claim.status === "open" ? "pending" : "—")}</td>
+            </tr>
+            <tr>
+              <td className="muted">Commit / lot in scope</td>
               <td>
-                {String(claim.entitled)} / {String(claim.lot_in_scope)}
+                token {String(claim.entitled)} / {String(claim.lot_in_scope)}
                 {claim.vin_matches ? " · VIN matches listing" : ""}
+                {claim.status === "honored" ? " · sponsor honor does not set consensus eligibility" : ""}
               </td>
             </tr>
             <tr>
@@ -1103,7 +1110,7 @@ function ClaimDetail({
             ) : null}
             {isClaimant ? (
               <button className="btn-danger" disabled={!!busy} onClick={() => void wrap("cancel", "cancel_claim")}>
-                Cancel claim
+                Cancel (stake penalty + cooldown)
               </button>
             ) : null}
             <button className="btn" disabled={!!busy} onClick={() => void wrap("exp", "release_expired")}>
@@ -1204,11 +1211,12 @@ function How() {
         </p>
         <h3 className="mt">Steward model</h3>
         <p className="hint">
-          Entitlement is a public-commit bearer claim: the proof page must contain{" "}
-          <span className="mono">RECALLVAULT:&lt;vault&gt;:&lt;unit&gt;:&lt;claimant&gt;</span> and look like a
-          purchase/ownership record. Payout is the sponsor’s fixed compensation. Open claims expire; anyone
-          can release them. Vehicle payouts are model-year campaign coverage after vPIC VIN decode. The UI
-          marks a payout irreversible only after FINALIZED + FINISHED_WITH_RETURN.
+          Entitlement is <strong>self-published bearer evidence</strong>, not verified ownership. The https
+          page must contain <span className="mono">RECALLVAULT:&lt;vault&gt;:&lt;unit&gt;:&lt;claimant&gt;</span>.
+          That page is never sent to the recall-scope LLM. Official FDA/NHTSA/CPSC records decide scope.
+          Cancel takes a stake penalty and cooldown. <span className="mono">honor_claim</span> is sponsor
+          settlement and does not write consensus eligibility. Payouts are irreversible only after FINALIZED +
+          FINISHED_WITH_RETURN.
         </p>
       </div>
     </section>

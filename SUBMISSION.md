@@ -2,11 +2,11 @@
 
 **Live app:** https://recallvault-app.vercel.app  
 **Source:** https://github.com/LIBRAPHILIP/recall-vault  
-**Explorer evidence (current Studionet contract):** https://explorer-studio.genlayer.com/address/0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4  
-**Intelligent Contract:** `0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4`  
-**Deploy tx:** https://explorer-studio.genlayer.com/tx/0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9  
+**Explorer evidence (current Studionet contract):** https://explorer-studio.genlayer.com/address/0x689dC76bc82cc94738EE139d917F676D0C435490  
+**Intelligent Contract:** `0x689dC76bc82cc94738EE139d917F676D0C435490`  
+**Deploy tx:** https://explorer-studio.genlayer.com/tx/0x752e76c165a13fcaf3067326145438aeef875f93832984c9828c5de6396409a5  
 
-Retired first deploy (do not use): `0x5372693bd427e52A0677c771D57aeCC027ef32b5`
+Retired deploys (do not use): `0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4`, `0x5372693bd427e52A0677c771D57aeCC027ef32b5`
 
 This is a complete GenLayer app: one real Intelligent Contract, a wallet frontend that calls it, and a workflow where GenLayer owns the decision that moves money.
 
@@ -91,15 +91,19 @@ Continued use: standing manufacturer bonds per SKU, insurer top-ups, advocacy-fu
 
 ## Steward revisions (entitlement, payout authority, liveness, VIN, finality)
 
-1. **Entitlement, not only recall scope.** Model: `public_commit_bearer`. Filing stores a commit token `RECALLVAULT:<product_id>:<unit>:<claimant>`. Adjudication **fetches the https proof URL**, requires the token on the page, and requires the page to be a purchase/ownership record (`entitled_document`). Payout requires `entitled && recall_found && in_scope && lot_in_scope`. A GitHub README with no receipt fails even if the token is pasted.
+1. **Entitlement is self-published bearer evidence, not verified ownership.** Model: `self_published_bearer_evidence`. The https page must contain `RECALLVAULT:<product_id>:<unit>:<claimant>`. Token presence is a deterministic string check. The proof page is **not** sent to the recall-scope LLM, so a forged receipt or prompt-injection page cannot rewrite `lot_in_scope`. `entitled` means the commit was published, not that a merchant or government authenticated a receipt. Payout still requires official `recall_found && in_scope && lot_in_scope`.
 
 2. **Sponsor-defined payout.** Each vault has `compensation_wei`. Claimants no longer choose `amount_wei`. The LLM returns eligibility booleans only. Paid amount is the vault compensation (capped by remaining bond).
 
-3. **Anti-griefing / liveness.** Filing requires `claim_stake_wei`, reserves only `compensation_wei`, and is capped by `max_open_claims`. Claims expire (`claim_ttl_sec`). Anyone may `release_expired` to unreserve and slash the stake into the bond. Duplicate unit IDs cannot sit open or paid twice.
+3. **Anti-griefing / liveness.** Filing requires `claim_stake_wei`, reserves only `compensation_wei`, and is capped by `max_open_claims`. Claims expire (`claim_ttl_sec`). Anyone may `release_expired`. **Cancel** slashes a penalty (default 50% of stake, rounded up) into the bond and starts a refile cooldown (default 1 hour). Immediate reserve/cancel cycling is blocked.
 
 4. **Vehicle evidence.** NHTSA does not expose a stable public unrepaired-VIN API. Vehicle vaults are explicitly **model-year campaign coverage after VIN decode**: a 17-character VIN is required; vPIC `DecodeVinValues` must match the listing YMM; `recallsByVehicle` establishes the campaign. UI and `vehicle_scope` say this is not manufacturer VIN-list eligibility.
 
-5. **Settlement hardness.** Contract: no adjudicated payout if `lot_in_scope` is false (also requires entitled + recall_found + in_scope). Frontend payout writes (`adjudicate`, `honor_claim`) are marked irreversible **only** when status is `FINALIZED` **and** `txExecutionResultName` / `execution_result` is exactly `FINISHED_WITH_RETURN`. A missing execution result or consensus `MAJORITY_AGREE` is not irreversible success.
+5. **Settlement hardness.** Contract: no adjudicated payout if `lot_in_scope` is false (also requires token commit + recall_found + in_scope). Frontend payout writes are irreversible only when `FINALIZED` and `FINISHED_WITH_RETURN`.
+
+6. **Sponsor honor ≠ consensus.** `honor_claim` sets `settlement_basis=sponsor_honor` and leaves `entitled` / `lot_in_scope` / `vin_matches` false. Adjudication sets `settlement_basis=consensus_official_recall`.
+
+Adversarial tests: forged receipt pages, proof-page prompt injection that must not override lot scope, missing commit token.
 
 ## What to review in the code
 

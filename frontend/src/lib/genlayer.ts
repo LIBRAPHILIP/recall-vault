@@ -5,7 +5,7 @@ import { asBool, asStr } from "./format";
 
 export const NETWORK_NAME = (import.meta.env.VITE_NETWORK || "studionet") as NetworkName;
 export const CONTRACT_ADDRESS = (import.meta.env.VITE_CONTRACT_ADDRESS ||
-  "0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4") as `0x${string}`;
+  "0x689dC76bc82cc94738EE139d917F676D0C435490") as `0x${string}`;
 
 export type NetworkName = "localnet" | "studionet" | "testnetAsimov" | "testnetBradbury";
 
@@ -75,7 +75,10 @@ export type Vault = {
   created_at: string;
   active: boolean;
   entitlement_model: string;
+  entitlement_guarantee: string;
   vehicle_scope: string;
+  cancel_penalty_bps: string;
+  cancel_cooldown_sec: string;
 };
 
 export type Claim = {
@@ -104,6 +107,8 @@ export type Claim = {
   entitled: boolean;
   lot_in_scope: boolean;
   vin_matches: boolean;
+  settlement_basis: string;
+  entitlement_guarantee: string;
 };
 
 export type Protocol = {
@@ -164,8 +169,11 @@ function mapVault(raw: Record<string, unknown>): Vault {
     max_open_claims: asStr(raw.max_open_claims),
     created_at: asStr(raw.created_at),
     active: asBool(raw.active),
-    entitlement_model: asStr(raw.entitlement_model) || "public_commit_bearer",
+    entitlement_model: asStr(raw.entitlement_model) || "self_published_bearer_evidence",
+    entitlement_guarantee: asStr(raw.entitlement_guarantee) || "self_published_commit_not_verified_ownership",
     vehicle_scope: asStr(raw.vehicle_scope),
+    cancel_penalty_bps: asStr(raw.cancel_penalty_bps) || "5000",
+    cancel_cooldown_sec: asStr(raw.cancel_cooldown_sec) || "3600",
   };
 }
 
@@ -196,6 +204,8 @@ function mapClaim(raw: Record<string, unknown>): Claim {
     entitled: asBool(raw.entitled),
     lot_in_scope: asBool(raw.lot_in_scope),
     vin_matches: asBool(raw.vin_matches),
+    settlement_basis: asStr(raw.settlement_basis),
+    entitlement_guarantee: asStr(raw.entitlement_guarantee),
   };
 }
 

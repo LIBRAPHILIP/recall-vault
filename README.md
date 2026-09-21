@@ -5,9 +5,9 @@
 - Live app: [https://recallvault-app.vercel.app](https://recallvault-app.vercel.app)
 - Also: [https://recall-vault-two.vercel.app](https://recall-vault-two.vercel.app)
 - Source: [github.com/LIBRAPHILIP/recall-vault](https://github.com/LIBRAPHILIP/recall-vault)
-- Live contract (Studionet): [`0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4`](https://explorer-studio.genlayer.com/address/0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4)
-- **Explorer evidence:** https://explorer-studio.genlayer.com/address/0x5FCDa9ef4b63aE85280beFbbcBf8203c5e925cF4
-- Deploy tx: [`0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9`](https://explorer-studio.genlayer.com/tx/0xdfaa9debef3eb0182f7ffa343cd6729dafb3b4e4582d1eb7ce6f1f3eff60f9f9)
+- Live contract (Studionet): [`0x689dC76bc82cc94738EE139d917F676D0C435490`](https://explorer-studio.genlayer.com/address/0x689dC76bc82cc94738EE139d917F676D0C435490)
+- **Explorer evidence:** https://explorer-studio.genlayer.com/address/0x689dC76bc82cc94738EE139d917F676D0C435490
+- Deploy tx: [`0x752e76c165a13fcaf3067326145438aeef875f93832984c9828c5de6396409a5`](https://explorer-studio.genlayer.com/tx/0x752e76c165a13fcaf3067326145438aeef875f93832984c9828c5de6396409a5)
 
 RecallVault is a complete GenLayer application: a Python Intelligent Contract plus a wallet-connected frontend. GenLayer is not a sidecar. The contract fetches live FDA, NHTSA, and CPSC records, reaches consensus on whether a specific lot / serial / vehicle is in scope, and pays GEN from a posted bond.
 
